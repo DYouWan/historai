@@ -1,0 +1,78 @@
+{
+  "defaultProfileId": "deepseek-chat",
+  "profiles": [
+    {
+      "id": "deepseek-chat",
+      "vendor": "DeepSeek",
+      "label": "DeepSeek Chat",
+      "chatCompletionsUrl": "https://api.deepseek.com/chat/completions",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat",
+      "supportsJsonObject": true,
+      "storyboard": {
+        "chunkThresholdMinutes": 10,
+        "scenesPerChunk": 18,
+        "spineMaxTokens": 12000,
+        "chunkMaxTokens": 18000,
+        "maxTokensHardCap": 65536,
+        "singleShotMaxTokensByDuration": {
+          "1": 8192,
+          "3": 14000,
+          "5": 22000,
+          "8": 26000,
+          "10": 32000,
+          "15": 48000
+        }
+      }
+    },
+    {
+      "id": "qwen-plus",
+      "vendor": "阿里云 DashScope",
+      "label": "Qwen Plus",
+      "chatCompletionsUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "apiKeyEnv": "DASHSCOPE_API_KEY",
+      "model": "qwen-plus",
+      "supportsJsonObject": true,
+      "storyboard": {
+        "chunkThresholdMinutes": 10,
+        "scenesPerChunk": 18,
+        "spineMaxTokens": 12000,
+        "chunkMaxTokens": 20000,
+        "maxTokensHardCap": 32768,
+        "singleShotMaxTokensByDuration": {
+          "1": 8192,
+          "3": 12000,
+          "5": 20000,
+          "8": 26000,
+          "10": 30000,
+          "15": 32768
+        }
+      }
+    },
+    {
+      "id": "qwen-turbo",
+      "vendor": "通义千问",
+      "label": "Qwen Turbo",
+      "chatCompletionsUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "apiKeyEnv": "DASHSCOPE_API_KEY",
+      "model": "qwen-turbo",
+      "supportsJsonObject": true,
+      "storyboard": {
+        "chunkThresholdMinutes": 10,
+        "scenesPerChunk": 20,
+        "spineMaxTokens": 10000,
+        "chunkMaxTokens": 16000,
+        "maxTokensHardCap": 8192,
+        "singleShotMaxTokensByDuration": {
+          "1": 6000,
+          "3": 8000,
+          "5": 8192,
+          "8": 8192,
+          "10": 8192,
+          "15": 8192
+        },
+        "disableChunked": false
+      }
+    }
+  ]
+}

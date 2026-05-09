@@ -1,0 +1,79 @@
+{
+  "defaultImageProfileId": "dashscope-qwen-image-2",
+  "defaultVideoProfileId": "volc-seedance-2-pro",
+  "imageProfiles": [
+    {
+      "id": "dashscope-qwen-image-2",
+      "vendor": "阿里云 DashScope",
+      "label": "Qwen-Image 2.0",
+      "apiKeyEnv": "DASHSCOPE_API_KEY",
+      "driver": "dashscope_qwen_image",
+      "generationUrl": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+      "model": "qwen-image-2.0",
+      "size": "1920*1080",
+      "promptExtend": true,
+      "watermark": false
+    },
+    {
+      "id": "volc-seedream-5-lite",
+      "vendor": "字节火山方舟",
+      "label": "Seedream 5.0 Lite",
+      "apiKeyEnv": "ARK_API_KEY",
+      "driver": "volcengine_seedream",
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "model": "doubao-seedream-5-0-lite-250428",
+      "size": "2K",
+      "responseFormat": "url",
+      "watermark": false
+    },
+    {
+      "id": "openai-dalle3",
+      "vendor": "OpenAI",
+      "label": "DALL·E 3",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "driver": "openai_dalle3",
+      "size": "1792x1024"
+    }
+  ],
+  "videoProfiles": [
+    {
+      "id": "volc-seedance-2-pro",
+      "vendor": "字节火山方舟",
+      "label": "Seedance 2.0 Pro",
+      "apiKeyEnv": "ARK_API_KEY",
+      "driver": "volcengine_seedance",
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "model": "doubao-seedance-2-0-260128",
+      "resolution": "1080p",
+      "ratio": "16:9",
+      "durationSec": 5,
+      "watermark": false
+    },
+    {
+      "id": "volc-seedance-2-fast",
+      "vendor": "字节火山方舟",
+      "label": "Seedance 2.0 Fast",
+      "apiKeyEnv": "ARK_API_KEY",
+      "driver": "volcengine_seedance",
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "model": "doubao-seedance-2-0-fast-260128",
+      "resolution": "720p",
+      "ratio": "16:9",
+      "durationSec": 5,
+      "watermark": false
+    },
+    {
+      "id": "happyhorse-1",
+      "vendor": "HappyHorse",
+      "label": "HappyHorse 1.0 视频",
+      "apiKeyEnv": "HAPPYHORSE_API_KEY",
+      "driver": "happyhorse",
+      "baseUrl": "https://happyhorse.app",
+      "model": "happyhorse-1.0/video",
+      "mode": "pro",
+      "durationSec": 5,
+      "aspectRatio": "16:9",
+      "sound": true
+    }
+  ]
+}
