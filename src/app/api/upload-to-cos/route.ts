@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
           ContentLength: buffer.length,
           ContentType: mimeType,
         },
-        (err, _data) => {
+        (err) => {
           if (err) {
             resolve(NextResponse.json(
               { error: err.message || "上传到云存储失败" },

@@ -1,4 +1,8 @@
-import { appendLlmDebugLog } from "@/lib/llm-request-logger";
+import {
+  appendLlmDebugLog,
+  createLlmRequestId,
+  llmRequestIdHeaders,
+} from "@/lib/llm-request-logger";
 import { generateWithTextLlm } from "@/lib/text-llm";
 import type { StylePreset, Tone } from "@/lib/types";
 import { parseStoryboardChunkMode } from "@/lib/storyboard-llm-budget";
@@ -8,6 +12,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
+  const requestId = createLlmRequestId();
   try {
     const body = (await req.json()) as {
       profileId?: string;
@@ -25,7 +30,10 @@ export async function POST(req: Request) {
     };
 
     if (!body.subject?.trim()) {
-      return NextResponse.json({ error: "请填写人物/主题（subject）" }, { status: 400 });
+      return NextResponse.json(
+        { error: "请填写人物/主题（subject）" },
+        { status: 400, headers: llmRequestIdHeaders(requestId) },
+      );
     }
 
     const videoDurationMin = parseVideoDurationMin(body.videoDurationMin);
@@ -51,6 +59,7 @@ export async function POST(req: Request) {
     });
 
     await appendLlmDebugLog({
+      requestId,
       route: "POST /api/generate",
       promptDebug,
       meta: {
@@ -63,9 +72,14 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: llmRequestIdHeaders(requestId),
+    });
   } catch (e) {
     const message = e instanceof Error ? e.message : "生成失败";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: message },
+      { status: 500, headers: llmRequestIdHeaders(requestId) },
+    );
   }
 }

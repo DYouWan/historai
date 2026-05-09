@@ -9,8 +9,10 @@ import type {
 } from "@/lib/types";
 import type { StoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { VIDEO_DURATION_UI_OPTIONS } from "@/lib/video-duration";
-import { SERIES_NAME_AI_DIRECTIONS } from "@/data/studio/person/series-name-direction-hints";
-import { THEME_TITLE_PRESETS } from "@/data/studio/person/theme-title-presets";
+import {
+  SERIES_NAME_AI_DIRECTIONS,
+  THEME_TITLE_PRESETS,
+} from "@/lib/prompts/series-prompts";
 import { driverSupportsReferenceImage } from "@/lib/image-coherence";
 import type { ImageProfileDriver } from "@/lib/media-profiles";
 import { ACTIVE_STUDIO_VERTICAL } from "@/lib/studio-verticals";
@@ -93,6 +95,22 @@ const badgeSuccess = `${badgeBase} bg-emerald-950/50 text-emerald-100/90 ring-em
 const badgeRunning = `${badgeBase} bg-amber-950/45 text-amber-50/90 ring-amber-700/35`;
 const badgeFail = `${badgeBase} bg-rose-950/40 text-rose-100 ring-rose-800/40`;
 const badgeMuted = `${badgeBase} bg-zinc-900/90 text-zinc-500 ring-zinc-800/70`;
+
+/** 分镜表 · 操作列分组与按钮（避免窄列里字号过小、层级不清） */
+const storyboardOpSectionLabel =
+  "select-none text-[10px] font-semibold tracking-wide text-zinc-500";
+const storyboardOpDivider = "h-px w-full bg-zinc-800/80";
+const storyboardOpPrimaryBtn =
+  "inline-flex min-h-[2.35rem] w-full items-center justify-center rounded-lg border border-amber-600/45 bg-amber-500/14 px-2 py-1.5 text-center text-[11px] font-semibold leading-snug text-amber-50 shadow-sm transition hover:border-amber-500/55 hover:bg-amber-500/22 disabled:cursor-not-allowed disabled:opacity-40";
+const storyboardOpSecondaryBtn =
+  "inline-flex min-h-[2.35rem] w-full items-center justify-center rounded-lg border border-zinc-600/75 bg-zinc-950/65 px-2 py-1.5 text-center text-[11px] font-semibold leading-snug text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-900/72 disabled:cursor-not-allowed disabled:opacity-40";
+/** 与 secondary 同级，略弱化以区分主流程 */
+const storyboardOpMutedBtn =
+  "inline-flex min-h-[2.35rem] w-full items-center justify-center rounded-lg border border-zinc-700/55 bg-zinc-950/45 px-2 py-1.5 text-center text-[11px] font-semibold leading-snug text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-900/58 disabled:cursor-not-allowed disabled:opacity-40";
+const storyboardOpVideoBtn =
+  "inline-flex min-h-[2.35rem] w-full items-center justify-center rounded-lg border border-amber-500/28 bg-amber-500/[0.08] px-2 py-1.5 text-center text-[11px] font-semibold leading-snug text-amber-100/95 transition hover:border-amber-500/45 hover:bg-amber-500/13 disabled:cursor-not-allowed disabled:opacity-40";
+const storyboardOpAdoptLabel =
+  "flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-800/85 bg-zinc-950/55 px-2.5 py-2 text-[11px] text-zinc-400 transition hover:border-zinc-700 hover:bg-zinc-900/65 hover:text-zinc-300";
 
 /** 表单内分区卡片 */
 const panelClass =
@@ -183,6 +201,8 @@ export function PersonStudioWorkspace() {
     return coverGallery[0]?.url ?? null;
   }, [coverGallery, selectedCoverId]);
   const [batchBusy, setBatchBusy] = useState(false);
+  /** 批量生成时设为 true 可中断循环 */
+  const stopBatchRef = useRef(false);
   const [llmProfiles, setLlmProfiles] = useState<LlmProfileOption[]>([]);
   const [profileId, setProfileId] = useState("");
   const [profilesError, setProfilesError] = useState<string | null>(null);
@@ -1118,11 +1138,13 @@ export function PersonStudioWorkspace() {
     if (!result?.scenes.length) return;
     setBatchBusy(true);
     setError(null);
+    stopBatchRef.current = false;
     try {
       const ordered = [...result.scenes].sort((a, b) => a.index - b.index);
       const urlByIndex: Record<number, string> = {};
       const standaloneU = latestCoverUrl;
       for (const s of ordered) {
+        if (stopBatchRef.current) break;
         const ref = resolveReferenceForScene(
           s.index,
           urlByIndex,
@@ -1138,6 +1160,7 @@ export function PersonStudioWorkspace() {
         if (out.success && out.url) {
           urlByIndex[s.index] = out.url;
         }
+        if (stopBatchRef.current) break;
       }
     } finally {
       setBatchBusy(false);
@@ -1215,7 +1238,7 @@ export function PersonStudioWorkspace() {
     }
   };
 
-  /** 镜号 ≥2 一律以独立「封面底图」为图生图参考 */
+  /** 镜号 ≥2 每镜均以同一封面为图生图参考（强锁脸；场面跳变大单镜改「按切片内容生成」） */
   const runRemainingAssetsFromCover = async () => {
     if (!result?.scenes.length) return;
     const coverUrl = latestCoverUrl;
@@ -1225,6 +1248,7 @@ export function PersonStudioWorkspace() {
     }
     setBatchBusy(true);
     setError(null);
+    stopBatchRef.current = false;
     try {
       const ordered = [...result.scenes]
         .filter((s) => s.index > 1)
@@ -1235,6 +1259,7 @@ export function PersonStudioWorkspace() {
         referenceRole: "cover" as const,
       };
       for (const s of ordered) {
+        if (stopBatchRef.current) break;
         const out = await runSingleAsset(
           s.index,
           s.visualDescription,
@@ -1244,6 +1269,7 @@ export function PersonStudioWorkspace() {
         if (out.success && out.url) {
           urlByIndex[s.index] = out.url;
         }
+        if (stopBatchRef.current) break;
       }
     } finally {
       setBatchBusy(false);
@@ -2082,71 +2108,94 @@ export function PersonStudioWorkspace() {
           </section>
 
           <section className="overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-900/40 shadow-xl shadow-black/20 ring-1 ring-zinc-800/35">
-            <div className="flex flex-col gap-3 border-b border-zinc-800/80 bg-gradient-to-r from-zinc-950/80 via-zinc-950/40 to-zinc-950/80 px-5 py-4 sm:px-6">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <h2 className="font-display text-base font-medium text-amber-100/95">
+            <div className="flex flex-col gap-4 border-b border-zinc-800/80 bg-gradient-to-r from-zinc-950/80 via-zinc-950/40 to-zinc-950/80 px-5 py-4 sm:px-6">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0 flex-1">
+                  <p className={sectionLabelClass}>步骤 4 · 静帧与成片</p>
+                  <h2 className="mt-1 font-display text-lg font-medium tracking-tight text-amber-100/95">
                     分镜与素材
                   </h2>
+                  <p className="mt-1.5 max-w-xl text-[12px] leading-relaxed text-zinc-500">
+                    逐镜出图、可选图生视频；批量按钮决定参考策略，单镜可在右侧微调。
+                  </p>
                   {sliceSaveHint ? (
                     <p className="mt-2 max-w-xl text-[11px] leading-relaxed text-emerald-200/90">
                       {sliceSaveHint}
                     </p>
                   ) : null}
                 </div>
-                <div className="flex shrink-0 flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={batchBusy || !latestCoverUrl}
-                    onClick={() => void runRemainingAssetsFromCover()}
-                    title="每镜以封面底图为参考，人物形象保持一致。"
-                    className="rounded-lg border border-amber-700/55 bg-amber-500/[0.12] px-3.5 py-2 text-xs font-semibold text-amber-50 shadow-sm transition hover:border-amber-500/65 hover:bg-amber-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40 sm:text-sm"
-                  >
-                    {batchBusy ? "生成中…" : "按封面批量生成镜头"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={batchBusy || !result?.scenes.length}
-                    onClick={runAllAssets}
-                    title="优先参考上一镜，无则回退封面底图，确保镜图间渐变连贯"
-                    className="rounded-lg border border-amber-700/55 bg-amber-500/[0.12] px-3.5 py-2 text-xs font-semibold text-amber-50 shadow-sm transition hover:border-amber-500/65 hover:bg-amber-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40 sm:text-sm"
-                  >
-                    {batchBusy ? "批量生成中…" : "按上一镜批量生成镜头"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      exportBundleBusy ||
-                      batchBusy ||
-                      !canExportSliceBundle
-                    }
-                    onClick={() => void runExportSliceBundle()}
-                    title="增量写入 slice-exports/主角_标题/：manifest.json + 仅补充缺失的静帧/视频；本地已有同 stem 则跳过下载。勾选「强制重新拉取」可从当前 URL 另存新版本（stem-2、stem-3…）。"
-                    className="rounded-lg border border-emerald-800/50 bg-emerald-950/35 px-3.5 py-2 text-xs font-semibold text-emerald-100/95 shadow-sm transition hover:border-emerald-600/50 hover:bg-emerald-900/40 disabled:cursor-not-allowed disabled:opacity-40 sm:text-sm"
-                  >
-                    {exportBundleBusy ? "导出中…" : "导出资源"}
-                  </button>
+                <div className="flex shrink-0 flex-col gap-3 sm:items-end">
+                  <div className="flex w-full flex-col gap-1.5 sm:w-auto sm:items-end">
+                    <span className={storyboardOpSectionLabel}>批量出图</span>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={batchBusy || !latestCoverUrl}
+                        onClick={() => void runRemainingAssetsFromCover()}
+                        title="每镜均以同一封面为图生图参考，强锁主角样貌；若某镜已是远景、对峙或换视角，该镜请改点「按切片内容生成」，避免构图被封面黏住。"
+                        className="min-h-[2.35rem] rounded-lg border border-amber-700/55 bg-amber-500/[0.12] px-3 py-2 text-xs font-semibold text-amber-50 shadow-sm transition hover:border-amber-500/65 hover:bg-amber-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40 sm:text-[13px]"
+                      >
+                        {batchBusy ? "生成中…" : "按封面批量"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={batchBusy || !result?.scenes.length}
+                        onClick={runAllAssets}
+                        title="按镜序生成：优先以上一镜成片为参考（镜间更连贯）；上一镜未出图时回退封面。若视角或场面跳变大，可对单镜用「按切片内容生成」打断连锁跑偏。"
+                        className="min-h-[2.35rem] rounded-lg border border-amber-700/55 bg-amber-500/[0.12] px-3 py-2 text-xs font-semibold text-amber-50 shadow-sm transition hover:border-amber-500/65 hover:bg-amber-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40 sm:text-[13px]"
+                      >
+                        {batchBusy ? "批量生成中…" : "按上一镜批量"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+                    <button
+                      type="button"
+                      disabled={
+                        exportBundleBusy ||
+                        batchBusy ||
+                        !canExportSliceBundle
+                      }
+                      onClick={() => void runExportSliceBundle()}
+                      title="增量写入 slice-exports/主角_标题/：manifest.json + 仅补充缺失的静帧/视频；本地已有同 stem 则跳过下载。勾选「强制重新拉取」可从当前 URL 另存新版本（stem-2、stem-3…）。"
+                      className="min-h-[2.35rem] rounded-lg border border-emerald-800/50 bg-emerald-950/35 px-3.5 py-2 text-xs font-semibold text-emerald-100/95 shadow-sm transition hover:border-emerald-600/50 hover:bg-emerald-900/40 disabled:cursor-not-allowed disabled:opacity-40 sm:text-[13px]"
+                    >
+                      {exportBundleBusy ? "导出中…" : "导出资源"}
+                    </button>
+                    {batchBusy ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          stopBatchRef.current = true;
+                        }}
+                        title="停止批量生成，已生成的镜头将保留"
+                        className="min-h-[2.35rem] rounded-lg border border-rose-700/55 bg-rose-500/[0.12] px-3.5 py-2 text-xs font-semibold text-rose-50 shadow-sm transition hover:border-rose-500/65 hover:bg-rose-500/[0.18] sm:text-[13px]"
+                      >
+                        停止生成
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="overflow-x-auto px-2 pb-6 sm:px-4">
-              <table className="w-full min-w-[680px] border-separate border-spacing-0 text-left text-sm">
+            <div className="overflow-x-auto px-3 pb-6 sm:px-5">
+              <table className="w-full min-w-[720px] border-separate border-spacing-0 text-left text-sm">
                 <thead>
-                  <tr className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                    <th className="sticky top-0 rounded-tl-lg border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-3 pl-3 backdrop-blur-sm sm:pl-4">
+                  <tr className="text-[11px] font-semibold text-zinc-500">
+                    <th className="sticky top-0 w-[4.5rem] rounded-tl-lg border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-2 pl-3 backdrop-blur-sm sm:w-[5rem] sm:pl-4">
                       镜号
                     </th>
-                    <th className="sticky top-0 border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-3 backdrop-blur-sm">
-                      产出状态
+                    <th className="sticky top-0 w-[7.5rem] border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-2 backdrop-blur-sm sm:w-[8rem]">
+                      状态
                     </th>
-                    <th className="sticky top-0 border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-3 backdrop-blur-sm">
+                    <th className="sticky top-0 min-w-[220px] border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-3 backdrop-blur-sm">
                       画面与预览
                     </th>
-                    <th className="sticky top-0 border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-3 backdrop-blur-sm">
+                    <th className="sticky top-0 min-w-[160px] border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-3 backdrop-blur-sm">
                       旁白
                     </th>
-                    <th className="sticky top-0 rounded-tr-lg border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-4 backdrop-blur-sm">
+                    <th className="sticky top-0 min-w-[13.5rem] rounded-tr-lg border-b border-zinc-800/90 bg-zinc-950/95 py-3 pr-4 pl-1 backdrop-blur-sm">
                       操作
                     </th>
                   </tr>
@@ -2184,170 +2233,247 @@ export function PersonStudioWorkspace() {
                     return (
                       <tr
                         key={s.index}
-                        className="border-b border-zinc-900/80 align-top transition-colors hover:bg-zinc-900/25"
+                        className="border-b border-zinc-800/55 align-top transition-colors odd:bg-zinc-950/15 even:bg-transparent hover:bg-zinc-900/30"
                       >
-                        <td className="py-3.5 pr-3 pl-3 align-top font-mono text-xs text-zinc-400 sm:pl-4">
-                          <span className="text-zinc-300">#{s.index}</span>
-                          <div className="mt-1 rounded bg-zinc-900/80 px-1.5 py-0.5 text-[10px] text-zinc-600 ring-1 ring-zinc-800/80">
-                            {s.durationSec}s
+                        <td className="py-4 pr-2 pl-3 align-top sm:pl-4">
+                          <div className="flex flex-col items-center gap-1.5">
+                            <span
+                              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-zinc-800/90 text-sm font-semibold tabular-nums text-amber-100/95 ring-1 ring-zinc-700/60"
+                              aria-label={`第 ${s.index} 镜`}
+                            >
+                              {s.index}
+                            </span>
+                            <span className="rounded-md bg-zinc-900/85 px-2 py-0.5 text-[10px] font-medium tabular-nums text-zinc-500 ring-1 ring-zinc-800/80">
+                              {s.durationSec}s
+                            </span>
                           </div>
                         </td>
-                        <td className="py-3.5 pr-3 align-top">
-                          <div className="flex flex-col gap-2">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-600">
-                                图
+                        <td className="py-4 pr-2 align-top">
+                          <div className="flex flex-col gap-2.5">
+                            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                              <span className="text-[10px] font-medium text-zinc-600">
+                                静帧
                               </span>
                               {imgBadge}
                             </div>
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-600">
-                                视
+                            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                              <span className="text-[10px] font-medium text-zinc-600">
+                                视频
                               </span>
                               {vidBadge}
                             </div>
                             {row?.status === "failed" && row.error ? (
-                              <p className="max-w-[12rem] text-[10px] leading-snug text-rose-300/90">
+                              <p className="max-w-[11rem] text-[10px] leading-snug text-rose-300/90">
                                 {row.error}
                               </p>
                             ) : null}
                             {row?.videoStatus === "failed" && row.videoError ? (
-                              <p className="max-w-[12rem] text-[10px] leading-snug text-rose-300/90">
+                              <p className="max-w-[11rem] text-[10px] leading-snug text-rose-300/90">
                                 {row.videoError}
                               </p>
                             ) : null}
                           </div>
                         </td>
-                        <td className="py-3.5 pr-3 align-top text-zinc-300">
-                          <p className="max-w-md text-xs leading-relaxed whitespace-pre-wrap text-zinc-400">
-                            {s.visualDescription}
-                          </p>
-                          <div className="mt-2.5 flex max-w-xs flex-col gap-2">
+                        <td className="py-4 pr-3 align-top text-zinc-300">
+                          <div className="rounded-xl border border-zinc-800/70 bg-zinc-950/40 p-3 ring-1 ring-zinc-800/35">
+                            <p className="max-w-md text-[13px] leading-relaxed whitespace-pre-wrap text-zinc-400">
+                              {s.visualDescription}
+                            </p>
+                          </div>
+                          <div className="mt-3 flex max-w-[14rem] flex-col gap-2.5">
                             {row?.url ? (
-                              <div className="overflow-hidden rounded-lg bg-black/40 ring-1 ring-zinc-800/90">
+                              <div className="overflow-hidden rounded-xl bg-black/45 shadow-inner ring-1 ring-zinc-800/90">
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                 <img
                                   src={row.url}
-                                  alt={`scene ${s.index}`}
-                                  className="max-h-36 w-full object-cover"
+                                  alt={`第 ${s.index} 镜静帧`}
+                                  className="aspect-[9/16] max-h-44 w-full object-cover"
                                 />
                               </div>
                             ) : null}
                             {row?.videoUrl ? (
-                              <div className="overflow-hidden rounded-lg bg-black/40 ring-1 ring-zinc-800/90">
+                              <div className="overflow-hidden rounded-xl bg-black/45 shadow-inner ring-1 ring-zinc-800/90">
                                 <video
                                   src={row.videoUrl}
                                   controls
-                                  className="max-h-44 w-full"
+                                  className="aspect-[9/16] max-h-52 w-full object-cover"
                                 />
                               </div>
                             ) : null}
                           </div>
                         </td>
-                        <td className="py-3.5 pr-3 align-top text-xs leading-relaxed text-zinc-400">
-                          {s.narration}
+                        <td className="py-4 pr-3 align-top">
+                          <div className="rounded-xl border border-zinc-800/70 bg-zinc-950/40 p-3 ring-1 ring-zinc-800/35">
+                            <p className="text-[13px] leading-relaxed text-zinc-400">
+                              {s.narration}
+                            </p>
+                          </div>
                         </td>
-                        <td className="py-3.5 pr-4 align-top">
-                          <div className="flex max-w-[11rem] flex-col gap-1.5">
-                            <button
-                              type="button"
-                              className="rounded-lg border border-amber-700/55 bg-amber-500/[0.12] px-2.5 py-1.5 text-center text-[10px] font-semibold text-amber-50 shadow-sm transition hover:border-amber-500/65 hover:bg-amber-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40"
-                              onClick={() => {
-                                const urlBy: Record<number, string> = {};
-                                for (const [k, v] of Object.entries(assets)) {
-                                  const idx = Number(k);
-                                  if (v.status === "success" && v.url) {
-                                    urlBy[idx] = v.url;
-                                  }
-                                }
-                                const standaloneU = latestCoverUrl;
-                                void runSingleAsset(
-                                  s.index,
-                                  s.visualDescription,
-                                  s.narration,
-                                  resolveReferenceForScene(
-                                    s.index,
-                                    urlBy,
-                                    assets,
-                                    standaloneU,
-                                  ),
-                                );
-                              }}
-                            >
-                              重新生成
-                            </button>
-                            {row?.status === "success" && row.url ? (
-                              <button
-                                type="button"
-                                disabled={
-                                  !subject.trim() ||
-                                  sliceSaveBusy === `scene-${s.index}`
-                                }
-                                onClick={() =>
-                                  void saveSliceImageToProject(
-                                    row.url as string,
-                                    {
-                                      role: "scene",
-                                      sceneIndex: s.index,
-                                    },
-                                  )
-                                }
-                                className="rounded-lg border border-zinc-600/80 bg-zinc-950/50 px-2.5 py-1.5 text-center text-[10px] font-semibold text-zinc-200 shadow-sm transition hover:border-zinc-500 hover:bg-zinc-900/60 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                {sliceSaveBusy === `scene-${s.index}` ?
-                                  "保存中…"
-                                : "保存图片"}
-                              </button>
-                            ) : null}
+                        <td className="py-4 pr-4 pl-1 align-top">
+                          <div className="flex min-w-[12rem] max-w-[16rem] flex-col gap-2">
+                            <span className={storyboardOpSectionLabel}>出图</span>
                             {s.index > 1 ? (
+                              <div className="grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  disabled={row?.status === "running"}
+                                  title={
+                                    "优先以上一镜成片为参考（支持图生图时）；上一镜尚未出图则用封面底图。与顶部「按上一镜批量」单镜逻辑一致。"
+                                  }
+                                  className={`${storyboardOpPrimaryBtn} px-1.5 text-[10px] leading-tight`}
+                                  onClick={() => {
+                                    const urlBy: Record<number, string> = {};
+                                    for (const [k, v] of Object.entries(assets)) {
+                                      const idx = Number(k);
+                                      if (v.status === "success" && v.url) {
+                                        urlBy[idx] = v.url;
+                                      }
+                                    }
+                                    const standaloneU = latestCoverUrl;
+                                    void runSingleAsset(
+                                      s.index,
+                                      s.visualDescription,
+                                      s.narration,
+                                      resolveReferenceForScene(
+                                        s.index,
+                                        urlBy,
+                                        assets,
+                                        standaloneU,
+                                      ),
+                                    );
+                                  }}
+                                >
+                                  带参考出图
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={row?.status === "running"}
+                                  title="不传封面或上一镜参考图，按本分镜与口播（及页顶系列/切片语境）出图；远景、对峙或视角跳变时可避免构图被参考帧黏住。"
+                                  className={`${storyboardOpSecondaryBtn} px-1.5 text-[10px] leading-tight`}
+                                  onClick={() => {
+                                    void runSingleAsset(
+                                      s.index,
+                                      s.visualDescription,
+                                      s.narration,
+                                    );
+                                  }}
+                                >
+                                  按切片内容生成
+                                </button>
+                              </div>
+                            ) : (
                               <button
                                 type="button"
-                                disabled={
-                                  !latestCoverUrl || row?.status === "running"
-                                }
-                                title={
-                                  latestCoverUrl ?
-                                    "以独立封面底图为图生图参考，结合本镜画面与口播重绘；脸易跑样时优先点此（需档案支持参考图）"
-                                  : "请先在上方成功生成封面底图"
-                                }
-                                className="rounded-lg border border-amber-700/55 bg-amber-500/[0.12] px-2.5 py-1.5 text-center text-[10px] font-semibold text-amber-50 shadow-sm transition hover:border-amber-500/65 hover:bg-amber-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={row?.status === "running"}
+                                title="第 1 镜不传封面或上一镜参考，按本分镜画面与口播出图。"
+                                className={storyboardOpPrimaryBtn}
                                 onClick={() => {
-                                  const u = latestCoverUrl;
-                                  if (!u) return;
+                                  const urlBy: Record<number, string> = {};
+                                  for (const [k, v] of Object.entries(assets)) {
+                                    const idx = Number(k);
+                                    if (v.status === "success" && v.url) {
+                                      urlBy[idx] = v.url;
+                                    }
+                                  }
+                                  const standaloneU = latestCoverUrl;
                                   void runSingleAsset(
                                     s.index,
                                     s.visualDescription,
                                     s.narration,
-                                    {
-                                      referenceImageUrl: u,
-                                      referenceRole: "cover",
-                                    },
+                                    resolveReferenceForScene(
+                                      s.index,
+                                      urlBy,
+                                      assets,
+                                      standaloneU,
+                                    ),
                                   );
                                 }}
                               >
-                                按封面重生
+                                按分镜出图
                               </button>
+                            )}
+                            {s.index > 1 ? (
+                              <>
+                                <div className={storyboardOpDivider} />
+                                <span className={storyboardOpSectionLabel}>
+                                  以封面为参考
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    !latestCoverUrl || row?.status === "running"
+                                  }
+                                  title={
+                                    latestCoverUrl ?
+                                      "以封面为参考强锁主角样貌；大场面或换视角可改用上方「按切片内容生成」（需档案支持参考图）"
+                                    : "请先在上方成功生成封面底图"
+                                  }
+                                  className={storyboardOpPrimaryBtn}
+                                  onClick={() => {
+                                    const u = latestCoverUrl;
+                                    if (!u) return;
+                                    void runSingleAsset(
+                                      s.index,
+                                      s.visualDescription,
+                                      s.narration,
+                                      {
+                                        referenceImageUrl: u,
+                                        referenceRole: "cover",
+                                      },
+                                    );
+                                  }}
+                                >
+                                  按封面重生
+                                </button>
+                              </>
                             ) : null}
                             {row?.status === "success" && row.url ? (
-                              <button
-                                type="button"
-                                disabled={row.videoStatus === "running"}
-                                className="rounded-lg border border-amber-600/35 bg-amber-500/[0.08] px-2.5 py-2 text-center text-[11px] font-semibold text-amber-100/95 shadow-sm transition hover:border-amber-500/50 hover:bg-amber-500/[0.12] disabled:cursor-not-allowed disabled:opacity-40"
-                                onClick={() =>
-                                  runSingleVideo(
-                                    s.index,
-                                    row.url as string,
-                                    s.visualDescription,
-                                  )
-                                }
-                              >
-                                {row.videoStatus === "running"
-                                  ? "视频生成中…"
-                                  : "图生此镜"}
-                              </button>
+                              <>
+                                <div className={storyboardOpDivider} />
+                                <span className={storyboardOpSectionLabel}>
+                                  成片与导出
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    !subject.trim() ||
+                                    sliceSaveBusy === `scene-${s.index}`
+                                  }
+                                  onClick={() =>
+                                    void saveSliceImageToProject(
+                                      row.url as string,
+                                      {
+                                        role: "scene",
+                                        sceneIndex: s.index,
+                                      },
+                                    )
+                                  }
+                                  className={storyboardOpMutedBtn}
+                                >
+                                  {sliceSaveBusy === `scene-${s.index}` ?
+                                    "保存中…"
+                                  : "保存图片"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={row.videoStatus === "running"}
+                                  className={storyboardOpVideoBtn}
+                                  onClick={() =>
+                                    runSingleVideo(
+                                      s.index,
+                                      row.url as string,
+                                      s.visualDescription,
+                                    )
+                                  }
+                                >
+                                  {row.videoStatus === "running"
+                                    ? "视频生成中…"
+                                    : "图生此镜"}
+                                </button>
+                              </>
                             ) : null}
                             {row?.status === "success" ? (
-                              <label className="flex cursor-pointer items-center gap-2 rounded-md border border-zinc-800/80 bg-zinc-950/50 px-2 py-1.5 text-[10px] text-zinc-500 transition hover:border-zinc-700 hover:bg-zinc-900/60">
+                              <label className={storyboardOpAdoptLabel}>
                                 <input
                                   type="checkbox"
                                   className="rounded border-zinc-600 bg-zinc-950 text-amber-600 focus:ring-amber-500/30"

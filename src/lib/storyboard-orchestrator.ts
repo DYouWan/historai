@@ -1,17 +1,16 @@
 import { callOpenAICompatibleChat } from "@/lib/chat-openai-compatible";
 import type { LlmProfileRow } from "@/lib/llm-profiles";
 import {
-  buildSystemPrompt,
-  buildUserPrompt,
-  type StoryboardPromptParams,
-} from "@/lib/prompts";
-import {
+  appendStoryboardChunkRetryInstruction,
   buildChunkSystemPrompt,
   buildChunkUserPrompt,
   buildSpineSystemPrompt,
   buildSpineUserPrompt,
+  buildSystemPrompt,
+  buildUserPrompt,
   type SceneSkeletonRow,
-} from "@/lib/prompts-storyboard-phased";
+  type StoryboardPromptParams,
+} from "@/lib/prompts/storyboard-prompts";
 import {
   chunkSceneIndexRanges,
   formatStoryboardStrategyLabel,
@@ -206,7 +205,7 @@ function buildPromptDebug(args: {
     temperature: 0.6,
     usesJsonResponseFormat: profile.supportsJsonObject !== false,
     assistantRaw: assistantJoined || undefined,
-    // 单次整包仅 1 条 phase 时，与根级 system/user 完全重复；省略以减小 jsonl / 避免 UI 双份
+    // 单次整包仅 1 条 phase 时，与根级 system/user 完全重复；省略以减小日志体积 / 避免 UI 双份
     phases: phases.length > 1 ? phases : undefined,
     storyboardStrategy: formatStoryboardStrategyLabel({
       useChunked,
@@ -393,7 +392,12 @@ export async function generateStoryboardWithProfile(args: {
       scenesPart = parseChunkScenes(chunkParsed, start, end);
     } catch (e2) {
       const msg = e2 instanceof Error ? e2.message : String(e2);
-      const retryUser = `${chunkUser}\n\n【自动重试】${msg}\n请只输出 JSON：{ "scenes": [...] }，且 scenes 恰好 ${end - start + 1} 条，index ${start}～${end}。`;
+      const retryUser = appendStoryboardChunkRetryInstruction(
+        chunkUser,
+        msg,
+        start,
+        end,
+      );
       userForLog = retryUser;
       assistant = await callChat({
         profile,

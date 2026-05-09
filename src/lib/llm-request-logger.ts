@@ -1,7 +1,20 @@
+import { randomUUID } from "node:crypto";
 import fs from "fs/promises";
 import path from "path";
 
-import type { LlmMessagesDebug } from "@/lib/types";
+import type { LlmDebugPhase, LlmMessagesDebug } from "@/lib/types";
+
+/** 在 API handler 入口调用一次，整段请求（含内部多轮 LLM）共用同一 ID */
+export function createLlmRequestId(): string {
+  return randomUUID();
+}
+
+/** 响应头带回 requestId，便于与 `.llm-read.md` 对照 */
+export const LLM_REQUEST_ID_HEADER = "x-request-id";
+
+export function llmRequestIdHeaders(requestId: string): Record<string, string> {
+  return { [LLM_REQUEST_ID_HEADER]: requestId };
+}
 
 /** 默认日志目录（项目根下）；可通过环境变量 HISTORAI_LLM_LOG_DIR 覆盖 */
 const DEFAULT_RELATIVE_LOG_DIR = "logs";
@@ -19,8 +32,123 @@ function resolveLogDir(): string {
   return path.join(process.cwd(), DEFAULT_RELATIVE_LOG_DIR);
 }
 
+function tryPrettyJsonString(raw: string): string | null {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return null;
+  }
+}
+
+function fence(lang: "text" | "json", body: string): string {
+  return "```" + lang + "\n" + body.trimEnd() + "\n```\n\n";
+}
+
+/** assistant 正文（不含 ### 标题），供根级与 merged 段复用 */
+function assistantMarkdownBody(raw: string | undefined): string {
+  if (!raw?.trim()) return "_(empty)_\n\n";
+  const t = raw.trim();
+  const pretty = tryPrettyJsonString(t);
+  return pretty !== null ?
+      `_${t.length} chars · parsed as JSON_\n\n${fence("json", pretty)}`
+    : `_${t.length} chars_\n\n${fence("text", t)}`;
+}
+
+function sectionAssistant(raw: string | undefined): string {
+  return "### assistant\n\n" + assistantMarkdownBody(raw);
+}
+
+function sectionPhase(
+  ph: LlmDebugPhase,
+  stepIndex?: number,
+  totalSteps?: number,
+): string {
+  const ord =
+    stepIndex != null && totalSteps != null ?
+      `第 ${stepIndex}/${totalSteps} 轮 · `
+    : "";
+  let out = `#### ${ord}\`${ph.phase}\``;
+  if (ph.maxTokens != null) out += ` · max_tokens=${ph.maxTokens}`;
+  out += "\n\n";
+  out +=
+    `##### system · ${ph.system.length} chars\n\n` + fence("text", ph.system);
+  out += `##### user · ${ph.user.length} chars\n\n` + fence("text", ph.user);
+  if (ph.assistantRaw?.trim()) {
+    out += "##### assistant\n\n";
+    const pretty = tryPrettyJsonString(ph.assistantRaw.trim());
+    out +=
+      pretty !== null ?
+        fence("json", pretty)
+      : fence("text", ph.assistantRaw.trim());
+  }
+  return out;
+}
+
+/** 人类可读 Markdown（按日追加 `YYYY-MM-DD.llm-read.md`） */
+function buildMarkdownBlock(args: {
+  ts: string;
+  requestId: string;
+  route: string;
+  meta: Record<string, unknown>;
+  promptDebug: LlmMessagesDebug;
+}): string {
+  const { ts, requestId, route, meta, promptDebug: pd } = args;
+  let md = "\n--------------------------------------------------------------------------------\n\n";
+  md += `## ${ts}\n\n`;
+  md += `**requestId:** \`${requestId}\`\n\n`;
+  md += `**route:** \`${route}\`\n\n`;
+  md += `- **model:** \`${pd.model}\` · temperature ${pd.temperature}`;
+  md += ` · JSON mode: ${pd.usesJsonResponseFormat ? "on" : "off"}\n`;
+  if (pd.storyboardStrategy) {
+    md += `- **storyboard:** ${pd.storyboardStrategy}\n`;
+  }
+  md += `\n### meta\n\n`;
+  md += fence("json", JSON.stringify(meta, null, 2));
+
+  if (pd.phases && pd.phases.length > 0) {
+    const n = pd.phases.length;
+    md += "### 本次请求的模型调用链\n\n";
+    md += `同一 HTTP 请求（**requestId** 见文首）内顺序执行，共 **${n}** 轮对话。\n\n`;
+    md += "| # | phase | max_tokens |\n|---|-------|------------|\n";
+    for (let i = 0; i < n; i++) {
+      const ph = pd.phases[i]!;
+      const mtok = ph.maxTokens != null ? String(ph.maxTokens) : "—";
+      md += `| ${i + 1} | \`${ph.phase}\` | ${mtok} |\n`;
+    }
+    md += "\n### 各轮明细（system / user / assistant）\n\n";
+    for (let i = 0; i < n; i++) {
+      md += sectionPhase(pd.phases[i]!, i + 1, n);
+    }
+    if (
+      pd.assistantRaw?.trim() &&
+      pd.phases.length > 1 &&
+      pd.phases.some((p) => p.assistantRaw)
+    ) {
+      md +=
+        "### 调试拼接：各轮 assistant 合并串\n\n" +
+        "_（仅供对照 UI / 解析逻辑；逐轮正文以上表为准。）_\n\n" +
+        assistantMarkdownBody(pd.assistantRaw);
+    }
+  } else {
+    md +=
+      `### system · ${pd.system.length} chars\n\n` + fence("text", pd.system);
+    md += `### user · ${pd.user.length} chars\n\n` + fence("text", pd.user);
+    md += sectionAssistant(pd.assistantRaw);
+  }
+
+  return md;
+}
+
+async function appendMarkdownLog(block: string): Promise<void> {
+  const dir = resolveLogDir();
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, `${localDateYmd(new Date())}.llm-read.md`);
+  await fs.appendFile(filePath, block, "utf8");
+}
+
 /**
- * 将单次 LLM 请求明细追加到按日 jsonl（本机 next dev 用）。
+ * 将 LLM 调试明细追加到按日 `YYYY-MM-DD.llm-read.md`。
+ * **requestId**：请在 API handler 入口 `createLlmRequestId()` 一次，同一 HTTP 请求内多次 `appendLlmDebugLog` 传同一值；不传则每次追加单独生成（一般不推荐）。
  * 设置 HISTORAI_LLM_LOG=0 可关闭。写入失败只打 console，不抛错。
  */
 export async function appendLlmDebugLog(entry: {
@@ -28,22 +156,24 @@ export async function appendLlmDebugLog(entry: {
   promptDebug: LlmMessagesDebug;
   /** 便于检索的少量上下文，勿放密钥 */
   meta?: Record<string, unknown>;
+  requestId?: string;
 }): Promise<void> {
   if (process.env.HISTORAI_LLM_LOG?.trim() === "0") {
     return;
   }
   try {
-    const dir = resolveLogDir();
-    await fs.mkdir(dir, { recursive: true });
-    const fileName = `${localDateYmd(new Date())}.jsonl`;
-    const filePath = path.join(dir, fileName);
-    const record = {
-      ts: new Date().toISOString(),
-      route: entry.route,
-      meta: entry.meta ?? null,
-      promptDebug: entry.promptDebug,
-    };
-    await fs.appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
+    const requestId = entry.requestId ?? randomUUID();
+    const meta = { ...(entry.meta ?? {}), requestId };
+    const ts = new Date().toISOString();
+    await appendMarkdownLog(
+      buildMarkdownBlock({
+        ts,
+        requestId,
+        route: entry.route,
+        meta,
+        promptDebug: entry.promptDebug,
+      }),
+    );
   } catch (e) {
     console.error("[HistorAI] LLM 日志写入失败:", e);
   }

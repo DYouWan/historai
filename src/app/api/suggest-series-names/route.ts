@@ -1,4 +1,8 @@
-import { appendLlmDebugLog } from "@/lib/llm-request-logger";
+import {
+  appendLlmDebugLog,
+  createLlmRequestId,
+  llmRequestIdHeaders,
+} from "@/lib/llm-request-logger";
 import {
   LlmNotConfiguredError,
   fetchAiSeriesNameSuggestions,
@@ -8,6 +12,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
+  const requestId = createLlmRequestId();
   try {
     const body = (await req.json()) as {
       profileId?: string;
@@ -24,6 +29,7 @@ export async function POST(req: Request) {
     });
 
     await appendLlmDebugLog({
+      requestId,
       route: "POST /api/suggest-series-names",
       promptDebug,
       meta: {
@@ -33,12 +39,21 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({ suggestion });
+    return NextResponse.json(
+      { suggestion },
+      { headers: llmRequestIdHeaders(requestId) },
+    );
   } catch (e) {
     if (e instanceof LlmNotConfiguredError) {
-      return NextResponse.json({ error: e.message }, { status: 400 });
+      return NextResponse.json(
+        { error: e.message },
+        { status: 400, headers: llmRequestIdHeaders(requestId) },
+      );
     }
     const message = e instanceof Error ? e.message : "生成失败";
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json(
+      { error: message },
+      { status: 502, headers: llmRequestIdHeaders(requestId) },
+    );
   }
 }
