@@ -5,6 +5,9 @@ export type Tone = "serious" | "narrative";
 /** 成片目标时长（分钟）：决定主生成提示中的镜数与总时长硬约束 */
 export type VideoDurationMin = 1 | 3 | 5 | 8 | 10 | 15;
 
+/** 流水线未完成阶段：仅有叙事骨架待整稿；已有整稿待分镜扩写 */
+export type StoryboardPipelinePending = "voiceover" | "scenes";
+
 export interface TimelineBeat {
   label?: string;
   text: string;
@@ -18,12 +21,40 @@ export interface StoryboardScene {
   durationSec: number;
 }
 
+/** L1 叙事骨架单条；与整稿口播按镜对齐 */
+export interface SceneSkeletonEntry {
+  index: number;
+  beat: string;
+  durationSec: number;
+}
+
+/** 客户端带回：仅重跑分镜扩写（L3）时提交上次生成的叙事骨架快照 */
+export interface StoryboardSpineSnapshot {
+  hook: string;
+  timeline: TimelineBeat[];
+  sceneSkeleton: SceneSkeletonEntry[];
+  factNotes: string[];
+  complianceNote?: string | null;
+}
+
 export interface GenerationResult {
   hook: string;
   timeline: TimelineBeat[];
   scenes: StoryboardScene[];
   factNotes: string[];
   complianceNote?: string;
+  /** L2 整稿口播（顺读主干）；段落之间可与 voiceoverParagraphs 用空行对应 */
+  voiceoverFullText: string;
+  /** 与镜号 1…N 一一对应的口播母稿段落 */
+  voiceoverParagraphs: string[];
+  /** L1 快照，供「按稿重出分镜」回传 */
+  sceneSkeleton: SceneSkeletonEntry[];
+  /**
+   * voiceover：仅有 L1 叙事骨架，待生成整稿口播；
+   * scenes：已有整稿，待 L3 扩写分镜（scenes 仍为空）。
+   * 有分镜后应为 undefined。
+   */
+  pipelinePending?: StoryboardPipelinePending;
   /** 在线大模型生成结果 */
   provider: "llm";
   /** 本次生成使用的模型档案 */
@@ -35,7 +66,7 @@ export interface GenerationResult {
   };
 }
 
-/** 分块 / 脊柱等多阶段请求中的一步（用于调试面板） */
+/** 分块 / 叙事骨架等多阶段请求中的一步（用于调试面板） */
 export interface LlmDebugPhase {
   phase: string;
   system: string;

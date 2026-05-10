@@ -158,7 +158,7 @@ export function getVideoDurationPreset(
   return VIDEO_DURATION_PRESETS[key];
 }
 
-/** 分块/单次生成共用的目标镜数（取时长预设区间中点，便于脊柱阶段锁条数） */
+/** 分块/单次生成共用的目标镜数（取时长预设区间中点，便于叙事骨架阶段锁条数） */
 export function targetSceneCountForPreset(d: VideoDurationPreset): number {
   return Math.round((d.minScenes + d.maxScenes) / 2);
 }

@@ -22,7 +22,7 @@ export type StoryboardProfileConfig = {
   chunkThresholdMinutes?: number;
   /** 每块扩写最多几条 scene（默认 18） */
   scenesPerChunk?: number;
-  /** 脊柱阶段 max_tokens（默认 12000） */
+  /** 叙事骨架阶段 max_tokens（默认 12000） */
   spineMaxTokens?: number;
   /** 每块扩写 max_tokens（默认 18000） */
   chunkMaxTokens?: number;
@@ -30,7 +30,7 @@ export type StoryboardProfileConfig = {
   singleShotMaxTokensByDuration?: Partial<
     Record<`${VideoDurationMin}`, number>
   >;
-  /** 为 true 时始终分块（短档也会走 脊柱+1 块） */
+  /** 为 true 时始终分块（短档也会走「叙事骨架 + 1 块」） */
   forceChunked?: boolean;
   /** 为 true 时禁用分块，仅单次生成（长档可能截断） */
   disableChunked?: boolean;

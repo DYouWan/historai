@@ -1,4 +1,10 @@
-import { appendMediaDebugLog, sanitizeRemoteAssetHint } from "@/lib/media-request-logger";
+import { sanitizeRemoteAssetHint } from "@/lib/media-request-logger";
+import {
+  appendLlmDebugLog,
+  buildImageGenerationPromptDebug,
+  createLlmRequestId,
+  llmRequestIdHeaders,
+} from "@/lib/llm-request-logger";
 import { generateSceneImage } from "@/lib/text-to-image";
 import type { StylePreset } from "@/lib/types";
 import { NextResponse } from "next/server";
@@ -26,34 +32,75 @@ type AssetsBody = {
 };
 
 export async function POST(req: Request) {
+  const requestId = createLlmRequestId();
+  const jsonHeaders = llmRequestIdHeaders(requestId);
+
   let body: AssetsBody | undefined;
   try {
     body = (await req.json()) as AssetsBody;
   } catch {
-    await appendMediaDebugLog({
-      kind: "image",
+    await appendLlmDebugLog({
+      requestId,
       route: "POST /api/assets",
-      status: "error",
-      meta: { phase: "parse_json", error: "请求体非合法 JSON" },
+      meta: { phase: "parse_json" },
+      promptDebug: buildImageGenerationPromptDebug({
+        error: "请求体非合法 JSON",
+      }),
     });
-    return NextResponse.json({ error: "请求无效" }, { status: 400 });
+    return NextResponse.json(
+      { error: "请求无效" },
+      { status: 400, headers: jsonHeaders },
+    );
   }
 
   try {
     if (body.standaloneCover) {
       if (body.sceneIndex !== 0) {
+        await appendLlmDebugLog({
+          requestId,
+          route: "POST /api/assets",
+          meta: {
+            phase: "validation",
+            standaloneCover: true,
+            sceneIndex: body.sceneIndex,
+          },
+          promptDebug: buildImageGenerationPromptDebug({
+            promptSummary: body.visualDescription,
+            error: "独立封面须 sceneIndex 为 0",
+          }),
+        });
         return NextResponse.json(
           { error: "独立封面须 sceneIndex 为 0" },
-          { status: 400 },
+          { status: 400, headers: jsonHeaders },
         );
       }
     } else if (body.sceneIndex === 0) {
+      await appendLlmDebugLog({
+        requestId,
+        route: "POST /api/assets",
+        meta: { phase: "validation", sceneIndex: 0 },
+        promptDebug: buildImageGenerationPromptDebug({
+          promptSummary: body.visualDescription,
+          error: "sceneIndex 0 仅用于独立封面（standaloneCover: true）",
+        }),
+      });
       return NextResponse.json(
         { error: "sceneIndex 0 仅用于独立封面（standaloneCover: true）" },
-        { status: 400 },
+        { status: 400, headers: jsonHeaders },
       );
     } else if (!body.visualDescription?.trim()) {
-      return NextResponse.json({ error: "缺少画面描述" }, { status: 400 });
+      await appendLlmDebugLog({
+        requestId,
+        route: "POST /api/assets",
+        meta: { phase: "validation", sceneIndex: body.sceneIndex },
+        promptDebug: buildImageGenerationPromptDebug({
+          error: "缺少画面描述",
+        }),
+      });
+      return NextResponse.json(
+        { error: "缺少画面描述" },
+        { status: 400, headers: jsonHeaders },
+      );
     }
 
     const seed =
@@ -78,10 +125,10 @@ export async function POST(req: Request) {
     });
 
     const { log, ...publicOut } = out;
-    await appendMediaDebugLog({
-      kind: "image",
+
+    await appendLlmDebugLog({
+      requestId,
       route: "POST /api/assets",
-      status: "ok",
       meta: {
         sceneIndex: body.sceneIndex,
         standaloneCover: Boolean(body.standaloneCover),
@@ -98,24 +145,38 @@ export async function POST(req: Request) {
         referenceInputHint: sanitizeRemoteAssetHint(
           body.referenceImageUrl?.trim() ?? "",
         ),
-        ...log,
+        driver: log.driver,
+        model: log.model,
+        promptCharCount: log.promptCharCount,
+        referenceImagePassedToVendor: log.referenceImagePassedToVendor,
         resultUrlHint: sanitizeRemoteAssetHint(out.url),
       },
+      promptDebug: buildImageGenerationPromptDebug({
+        driver: log.driver,
+        model: log.model,
+        promptSummary: log.promptSummary,
+        promptCharCount: log.promptCharCount,
+        referenceImagePassedToVendor: log.referenceImagePassedToVendor,
+        resultUrlHint: sanitizeRemoteAssetHint(out.url),
+      }),
     });
 
-    return NextResponse.json({
-      ...publicOut,
-      sceneIndex: body.sceneIndex,
-      projectSeed: seed,
-    });
+    return NextResponse.json(
+      {
+        ...publicOut,
+        sceneIndex: body.sceneIndex,
+        projectSeed: seed,
+      },
+      { headers: jsonHeaders },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : "生成图片失败";
-    await appendMediaDebugLog({
-      kind: "image",
+    await appendLlmDebugLog({
+      requestId,
       route: "POST /api/assets",
-      status: "error",
       meta: {
         sceneIndex: body?.sceneIndex,
+        standaloneCover: Boolean(body?.standaloneCover),
         imageProfileId: body?.imageProfileId ?? null,
         stylePreset: body?.stylePreset,
         referenceRole: body?.referenceRole ?? null,
@@ -124,7 +185,14 @@ export async function POST(req: Request) {
           : "",
         error: message,
       },
+      promptDebug: buildImageGenerationPromptDebug({
+        promptSummary: body?.visualDescription,
+        error: message,
+      }),
     });
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: message },
+      { status: 500, headers: jsonHeaders },
+    );
   }
 }

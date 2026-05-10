@@ -8,6 +8,7 @@ import { generateStoryboardWithProfile } from "@/lib/storyboard-orchestrator";
 import type {
   GenerationResult,
   LlmMessagesDebug,
+  StoryboardSpineSnapshot,
   Tone,
   VideoDurationMin,
 } from "@/lib/types";
@@ -23,8 +24,18 @@ export async function generateWithTextLlm(params: {
   tone: Tone;
   stylePreset: string;
   videoDurationMin?: VideoDurationMin;
-  /** 分块策略：auto=按档案阈值；on=强制分块；off=强制单次 */
+  /** 分块策略：auto=短片单次扩写全长、长片按档案切段；on=强制切段；off=单次扩写全长 */
   storyboardChunkMode?: string;
+  /** 与 voiceoverFullTextOverride（或段落数组）同时传入时仅跑分镜扩写（L3） */
+  spineSnapshot?: StoryboardSpineSnapshot | null;
+  voiceoverFullTextOverride?: string | null;
+  voiceoverParagraphsOverride?: string[] | null;
+  /** 首次生成仅 L1+L2，确认口播后再请求扩写 */
+  stopAfterVoiceover?: boolean;
+  /** 首次仅 L1 叙事骨架 */
+  stopAfterSpine?: boolean;
+  /** 在已有叙事骨架快照上仅跑 L2 */
+  generateVoiceoverOnly?: boolean;
 }): Promise<{ result: GenerationResult; promptDebug: LlmMessagesDebug }> {
   const file = loadLlmProfilesFile();
   const profile = pickProfile(file, params.profileId);
@@ -60,5 +71,11 @@ export async function generateWithTextLlm(params: {
     params: promptParams,
     videoDurationMin,
     chunkMode,
+    spineSnapshot: params.spineSnapshot ?? undefined,
+    voiceoverFullTextOverride: params.voiceoverFullTextOverride ?? undefined,
+    voiceoverParagraphsOverride: params.voiceoverParagraphsOverride ?? undefined,
+    stopAfterVoiceover: params.stopAfterVoiceover === true,
+    stopAfterSpine: params.stopAfterSpine === true,
+    generateVoiceoverOnly: params.generateVoiceoverOnly === true,
   });
 }

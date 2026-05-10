@@ -1,8 +1,13 @@
 /**
- * Storyboard Prompts - 文案分镜：单次主生成 + 分阶段（脊柱 → 分块扩写）提示拼装
+ * Storyboard Prompts - 文案分镜：单次主生成 + 分阶段（叙事骨架 → 分块扩写）提示拼装
  */
 
-import type { TimelineBeat, Tone, VideoDurationMin } from "@/lib/types";
+import type {
+  SceneSkeletonEntry,
+  TimelineBeat,
+  Tone,
+  VideoDurationMin,
+} from "@/lib/types";
 import {
   getVideoDurationPreset,
   type VideoDurationPreset,
@@ -19,7 +24,7 @@ export type StoryboardPromptParams = {
   videoDurationMin?: VideoDurationMin;
 };
 
-/** 极简 stakes 须在 index 1～返回值（含）内首次说清楚（与脊柱/分块扩写共用） */
+/** 极简 stakes 须在 index 1～返回值（含）内首次说清楚（与叙事骨架/分块扩写共用） */
 export function stakeWindowEndInclusive(d: VideoDurationPreset): number {
   const mid = (d.minScenes + d.maxScenes) / 2;
   return Math.max(3, Math.min(8, Math.round(mid / 4)));
@@ -31,7 +36,7 @@ function buildSchemaHint(d: VideoDurationPreset): string {
 {
   "hook": "黄金数秒抓耳：个人主角用第一人称「我」；群体用「他们」开场（不用「我们」代指该群体）。强反差/强悬念，指向唯一切面。**极简 stakes**：至迟在**第 ${stakeEnd} 镜（含）前**的口播链中，须让观众明白「此刻险在何处或赢面何在、这一下为何关键」；hook 可只负责钩子，stakes 由第 2～${stakeEnd} 镜与 hook 一脉相承补足，禁止拖到中段才首次交代。",
   "timeline": [
-    { "label": "可选情绪或结构节点（如：铺垫反差）", "text": "与 hook、口播人称一致：个人用「我」自述，群体用「他们」指称；可嵌套史据引句；禁止与个人线混用全知列传腔", "sources": ["《xx》或学者观点简述"] }
+    { "label": "可选情绪或结构节点（如：铺垫反差）", "text": "与 hook、口播人称一致：白话叙事为主；个人「我」/ 群体「他们」；可穿插极短史据引句，实体信息用白话写清；禁止全知列传腔", "sources": ["《xx》或学者观点简述"] }
   ],
   "scenes": [
     {
@@ -89,6 +94,8 @@ function buildStoryboardPromptParts(params: StoryboardPromptParams): {
 
 口吻：${toneText}
 
+**语体（短视频可念）**：**hook**、**timeline[].text**、**sceneSkeleton[].beat** 以及后续口播扩写，须以**现代汉语白话**为主，像对镜头口述、能上字幕念顺；避免之乎者也、刻意骈俪对仗与史传仿写腔。**禁止**以文言或半文半白作为整条叙事主干。若引用典籍，仅用**极短**摘句点睛，且同段仍以白话叙事实体信息。
+
 **声画分工（人物向成片）**：口播人称不变（个人「我」/ 群体「他们」）。**visualDescription** 按「导演分镜」写：**允许且应当在叙事需要时出现对立阵营轮廓、部属与人群反应、局势环境与纵深**，与口播实体信息一致即可；勿把整条片子写成「镜镜只有主角一张脸」的配图脚本。
 `;
 
@@ -114,7 +121,7 @@ function buildStoryboardPromptParts(params: StoryboardPromptParams): {
   return { d, contextPrefix, productAndRequirements };
 }
 
-/** 人物向系列与人物、人称、画风、口吻等共用前缀（分块脊柱与扩写阶段复用） */
+/** 人物向系列与人物、人称、画风、口吻等共用前缀（分块叙事骨架与扩写阶段复用） */
 export function buildStoryboardContextPrefix(
   params: StoryboardPromptParams,
 ): string {
@@ -133,7 +140,7 @@ export function buildSystemPrompt(
 ): string {
   const d = getVideoDurationPreset(videoDurationMin);
   const stakeEnd = stakeWindowEndInclusive(d);
-  return `你是 HistorAI 的历史短视频脚本与分镜助手：帮用户讲透**一个**有传播力的「切面」（单一钩子与冲突线）。**峰值叙事**：**前 ${stakeEnd} 镜（含）**内必须把**极简 stakes** 讲清楚；全片只允许**一处**明明白白的高峰（timeline label 明示）；收尾须**回扣**那座高峰以满足峰终。**绝不写人物生平编年史**（禁止求全传、一生流水账），**但当前选定的这一条切片必须有头有尾讲完**：自成完整微型故事弧（起→承→转/高点→合/收束），不得因「非编年」而虎头蛇尾。你只输出 JSON，内容为中文。对不确定的史实要明确写出不确定性，不得把演义当成正史。**人称**：个人用「我」，群体用「他们」。**画面**：分镜 visualDescription 须穿插对峙、部属反应或环境局势镜头，避免全线只有主角单人特写。**分镜 ${d.minScenes}～${d.maxScenes}**、成片目标 **${d.labelShort}**（总时长须落在产品约束的秒数区间内）。**所有 scenes 的 narration 连读须自足讲完本切片**（勿把完整故事只写在 timeline、口播留空壳）。顺读须连成故事线，有因果或时间承接；末段须有直白落槌再加回扣高峰的余韵，勿连堆隐喻断尾。**narration** 与每镜时长字数匹配。`;
+  return `你是 HistorAI 的历史短视频脚本与分镜助手：帮用户讲透**一个**有传播力的「切面」（单一钩子与冲突线）。**峰值叙事**：**前 ${stakeEnd} 镜（含）**内必须把**极简 stakes** 讲清楚；全片只允许**一处**明明白白的高峰（timeline label 明示）；收尾须**回扣**那座高峰以满足峰终。**绝不写人物生平编年史**（禁止求全传、一生流水账），**但当前选定的这一条切片必须有头有尾讲完**：自成完整微型故事弧（起→承→转/高点→合/收束），不得因「非编年」而虎头蛇尾。你只输出 JSON，内容为中文。对不确定的史实要明确写出不确定性，不得把演义当成正史。**语体**：hook、timeline 与各镜 narration 以**现代汉语白话**口述为宜，便于字幕与收听；避免文言、骈句作主叙事。**人称**：个人用「我」，群体用「他们」。**画面**：分镜 visualDescription 须穿插对峙、部属反应或环境局势镜头，避免全线只有主角单人特写。**分镜 ${d.minScenes}～${d.maxScenes}**、成片目标 **${d.labelShort}**（总时长须落在产品约束的秒数区间内）。**所有 scenes 的 narration 连读须自足讲完本切片**（勿把完整故事只写在 timeline、口播留空壳）。顺读须连成故事线，有因果或时间承接；末段须有直白落槌再加回扣高峰的余韵，勿连堆隐喻断尾。**narration** 与每镜时长字数匹配。`;
 }
 
 export function buildUserPrompt(params: StoryboardPromptParams): string {
@@ -146,13 +153,9 @@ ${productAndRequirements}
 ${buildSchemaHint(d)}`;
 }
 
-// --- 分阶段分块（脊柱 → 扩写），与 orchestrator  chunked 路径共用 ---
+// --- 分阶段分块（叙事骨架 → 扩写），与 orchestrator  chunked 路径共用 ---
 
-export type SceneSkeletonRow = {
-  index: number;
-  beat: string;
-  durationSec: number;
-};
+export type SceneSkeletonRow = SceneSkeletonEntry;
 
 export function buildSpineSystemPrompt(
   videoDurationMin: VideoDurationMin,
@@ -160,7 +163,29 @@ export function buildSpineSystemPrompt(
 ): string {
   const d = getVideoDurationPreset(videoDurationMin);
   const stakeEnd = stakeWindowEndInclusive(d);
-  return `你是 HistorAI 的**分镜脊柱规划**助手（第一阶段）。你只输出**合法 JSON**，中文。**不写**逐镜的 visualDescription 与 narration；改为输出 **sceneSkeleton**：恰好 **${targetSceneCount}** 条，每条含 index、beat（本镜叙事要点，20～60 字）、durationSec。**beat** 宜预见后续画面的**场面调度**：间歇包含对峙压力、部属/人群反应或环境局势，勿条条等同「主角独白站桩」。**hook** 与 **timeline**、**factNotes**、**complianceNote** 须与主产品规则一致；**timeline 须包含一段高峰 label（含「高潮」「顶点」「翻盘」「一搏」「定局」「一绝」或其同义语之一）**；前置 **${stakeEnd} 镜**内 beat 链条须能看出**极简 stakes** 被落实。成片目标 **${d.labelShort}**，全片须规划 **${d.minScenes}～${d.maxScenes}** 镜；你输出的 sceneSkeleton 条数必须**恰好等于 ${targetSceneCount}**（用于后续自动分块扩写）。不确定史实须标注不确定性。人称：个人「我」，群体「他们」。末段 beats 指向**峰终回扣**（回扣唯一高峰命题）。`;
+  return `你是 HistorAI 的**叙事骨架规划**助手（第一阶段 L1）。
+
+【输出】
+- 只输出**合法 JSON**，中文；不得 Markdown、代码围栏或非 JSON。
+- **不写**逐镜的 visualDescription、narration 或 scenes；本阶段只规划骨架字段（见用户消息中的 JSON 结构）。
+
+【sceneSkeleton（核心）】
+- 恰好 **${targetSceneCount}** 条，与成片目标 **${d.labelShort}**、全片镜数区间 **${d.minScenes}～${d.maxScenes}** 对齐；条数必须**等于 ${targetSceneCount}**，供后续自动分块扩写。
+- 每条含：**index**、**beat**（本镜叙事要点，约 20～60 字）、**durationSec**。
+- **beat** 宜预见后续画面的**场面调度**：间歇写到对峙压力、部属/人群反应或环境局势；避免条条都是「主角独白站桩」。
+- **前置 ${stakeEnd} 镜（含）内**：整条 beat 链须能看出**极简 stakes** 已被落实（与主产品 stakes 窗口一致）。
+- **末段几条 beat**：须指向**峰终回扣**（回扣全片**唯一**高峰命题，勿换题收尾）。
+
+【hook / timeline / 备注】
+- **hook**、**timeline**、**factNotes**、**complianceNote** 与主产品峰值叙事规则一致。
+- **timeline** 须含**恰好一段** label 明示高峰语义：**须出现**「高潮」「顶点」「翻盘」「一搏」「定局」「一绝」或其同义语之一，且该段 text 对应全片那一次顶峰。
+
+【人称与史实】
+- 个人主角用「我」，群体对象用「他们」。
+- 不确定史实须在输出中标注不确定性（可与 factNotes 呼应）；禁止把演义当正史写死。
+
+【语体】
+- **hook**、**timeline[].text**、每条 **beat** 均为后续口播的蓝本：须写**现代白话**，短小上口；勿写文言独白或对仗式 slogans 充当主要内容。`;
 }
 
 export function buildSpineUserPrompt(
@@ -175,7 +200,7 @@ export function buildSpineUserPrompt(
 {
   "hook": "黄金数秒开场，个人「我」或群体「他们」，强悬念，指向唯一切面；极简 stakes 至迟在第 ${stakeEnd} 镜前由 beat 链体现",
   "timeline": [
-    { "label": "节点", "text": "与 hook 人称一致；可嵌史据", "sources": ["《xx》或学者观点"] }
+    { "label": "节点", "text": "与 hook 人称一致；白话叙事为主，史据放 sources", "sources": ["《xx》或学者观点"] }
   ],
   "sceneSkeleton": [
     { "index": 1, "beat": "本镜要发生的动作/信息/情绪，供下一阶段扩写口播与画面", "durationSec": ${d.perSceneCenterSec} }
@@ -184,12 +209,13 @@ export function buildSpineUserPrompt(
   "complianceNote": null
 }
 
-**脊柱阶段硬约束**
+**叙事骨架阶段硬约束**
 1. **sceneSkeleton 必须恰好 ${targetSceneCount} 条**；index 须为 1～${targetSceneCount} 连续整数，不得缺号或重复。
 2. 每条 **durationSec** 须在 **${d.perSceneMinSec}～${d.perSceneMaxSec}**；全片 durationSec 之和须落在 **${d.minTotalSec}～${d.maxTotalSec}**（若略有偏差，后续扩写阶段会微调单镜时长，此处尽量接近）。
 3. **beat** 为扩写蓝图：须让读者能预见口播将包含的**实体信息**（时间、地点、数字、动作等择一），并可标注本镜画面侧重（主角反应 / 对立面压力 / 部属群像 / 环境局势之一），勿写空泛形容词堆砌；**不要**在此阶段写完整口播长句。
 4. timeline 共 **${d.timelineMin}～${d.timelineMax}** 段，每段至少 1 条 sources；**其中一段 label 必须含高峰关键词**（与主产品「唯一高峰」一致）。
 5. **禁止输出 scenes 字段**；禁止输出 visualDescription / narration。
+6. **语体**：hook、timeline 各段 text、每条 beat 须为**现代汉语白话**（短视频口述感）；禁止以文言或骈句作为主叙事；典籍用语最多点到为止，实体情节用白话写清。
 
 ${prefix}
 
@@ -197,8 +223,54 @@ ${prefix}
   return spineSchema;
 }
 
+export function buildVoiceoverSystemPrompt(
+  videoDurationMin: VideoDurationMin,
+  targetSceneCount: number,
+): string {
+  const d = getVideoDurationPreset(videoDurationMin);
+  return `你是 HistorAI 的**整稿口播撰稿**助手（第二阶段）。在已定叙事骨架（sceneSkeleton 镜数与 beats）之上，写出**成片可顺读的唯一口播主干**。你只输出合法 JSON，中文。**不写** visualDescription；**不写** scenes。
+
+【长稿优先】
+- 先以 **voiceoverFullText** 写成**一篇连贯口播长稿**：现代汉语白话，像真人从头到尾讲圆一条故事弧；段与段之间有因果与时间承接（可适当用「接着」「就在那时」「后来」「到那天」等轻衔接），**禁止**写成几十句互不粘连的 caption 拼盘。
+- **仅在镜与镜之间**插入**两个换行**（\\n\\n）分段：全文因此恰好被切成 **${targetSceneCount}** 段；**段内**一般为 **1～3 句**，合并相关动作与信息，**禁止**为凑镜数把「走一步、喘一声」拆成大量极短段。
+- **paragraphs** 数组必须与 **voiceoverFullText** 按双换行切分后的 **${targetSceneCount} 段逐字一致**（复制粘贴核对后再提交 JSON）。
+
+【其余硬约束】
+- 第 i 段对应 index=i 的镜，须落实该镜 skeleton 的 beat 与 durationSec；约 **3～4 汉字/秒** 核对字数与口播时长。
+- 人称、stakes、唯一高峰、峰终、禁止编年史等产品规则与主生成一致（见用户消息）。
+- 不得编造与 factNotes 冲突的史实；不确定处加「史载」「一说」等。
+- 成片目标 **${d.labelShort}**。`;
+}
+
+export function buildVoiceoverUserPrompt(
+  params: StoryboardPromptParams,
+  targetSceneCount: number,
+  skeletonTable: string,
+): string {
+  const prefix = buildStoryboardContextPrefix(params);
+  const product = buildStoryboardProductAndRequirementsOnly(params);
+
+  return `${prefix}
+
+${product}
+
+**已定叙事骨架（镜数与节拍，不可增删镜）**
+${skeletonTable}
+
+你必须只输出合法 JSON（不要 Markdown，不要代码围栏）：
+{
+  "voiceoverFullText": "连贯口播长稿：镜与镜之间仅用两个换行分隔，全文顺读一气；共 ${targetSceneCount} 段",
+  "paragraphs": [
+    "与 voiceoverFullText 第 1 段逐字相同",
+    "... 恰好 ${targetSceneCount} 条，且与全文按 \\n\\n 切分完全一致 ..."
+  ]
+}
+
+请输出 JSON：**voiceoverFullText 按 \\n\\n 切分后恰好 ${targetSceneCount} 段，且 paragraphs 与切分结果逐字一致**。`;
+}
+
 export function buildChunkSystemPrompt(): string {
-  return `你是 HistorAI 的**分镜扩写**助手（第二阶段）。你只输出合法 JSON，中文。输出根对象仅含 **scenes** 数组，且条数必须与用户指定的区间**完全一致**，index 连续。每条含 index、visualDescription（须带统一画风关键词前缀）、narration（口播，人称与脊柱一致）、durationSec。同一 index 下 **visualDescription 与 narration 必须声画实体对齐**：口播里观众能「看见」的（主要人物站位、环境场所、关键手持物、昼夜与天气氛围、人群/敌军是否入画等）须在画面描述中落实；若口播点名具体数字、器物或地点，画面不得画成明显相反或无关场景（不确定处用保守构图，勿编造与 factNotes 冲突的细节）。**visualDescription** 须落实主产品的**镜头丰富度**：穿插对峙、部属反应或环境局势，避免连续多镜只有主角单人特写。须与给定 timeline、sceneSkeleton 及前后衔接要求严格对齐；不得编造与 factNotes 矛盾的夸大数字。覆盖**叙事高峰镜群**时须在事实信息与时长允许下压实势能顶点；若为全片收尾块，严格遵守主产品的**落槌 + 回扣高峰的余韵**。`;
+  return `你是 HistorAI 的**分镜扩写**助手（第三阶段）。你只输出合法 JSON，中文。输出根对象仅含 **scenes** 数组，且条数必须与用户指定的区间**完全一致**，index 连续。每条含 index、visualDescription（须带统一画风关键词前缀）、narration（口播）、durationSec。\n\n**口播母稿锁定**：用户为每镜提供了**口播母稿段落**，你必须以其为内容与事实依据：可将 wording 微调度口播节奏与时长，**禁止**引入相反事实、新人称线或偏离母稿命题；visualDescription 自由发挥场面调度但须与 narration 声画实体对齐。\n\n同一 index 下 **visualDescription 与 narration 必须声画实体对齐**：口播里观众能「看见」的须在画面描述中落实。**visualDescription** 须落实主产品的**镜头丰富度**。须与给定 timeline、sceneSkeleton 严格对齐；不得编造与 factNotes 矛盾的夸大数字。覆盖**叙事高峰镜群**时压实势能顶点；收尾块遵守**落槌 + 回扣高峰的余韵**。`;
 }
 
 export function buildChunkUserPrompt(args: {
@@ -210,6 +282,8 @@ export function buildChunkUserPrompt(args: {
   timeline: TimelineBeat[];
   factNotes: string[];
   skeletonRows: SceneSkeletonRow[];
+  /** 与 skeletonRows 逐行对应的本镜口播母稿 */
+  lockedParagraphs: string[];
   previousLastNarration: string | null;
   nextChunkFirstBeat: string | null;
 }): string {
@@ -222,6 +296,16 @@ export function buildChunkUserPrompt(args: {
         `- index=${r.index} durationSec=${r.durationSec} beat：${r.beat}`,
     )
     .join("\n");
+
+  const paraLines =
+    args.skeletonRows.length !== args.lockedParagraphs.length ?
+      ""
+    : args.skeletonRows
+        .map(
+          (r, i) =>
+            `- **index=${r.index}**（母稿，须落实为 narration 内容与事实）\n${args.lockedParagraphs[i]}`,
+        )
+        .join("\n\n");
 
   const prev =
     args.previousLastNarration?.trim() ?
@@ -243,8 +327,11 @@ ${hook}
 **timeline（全文结构，不得改写）**
 ${timelineJson}
 
-**本块 sceneSkeleton（必须逐条落实为口播+画面）**
+**本块 sceneSkeleton（必须逐条落实为画面与时长；口播内容以下方母稿为准）**
 ${skTable}
+
+**本块口播母稿（须逐条落实为 narration，仅允许口语化与时长微调）**
+${paraLines || "（内部错误：母稿与骨架条数不一致）"}
 
 **factNotes（扩写时不得违反）**
 ${JSON.stringify(factNotes, null, 2)}
@@ -260,6 +347,15 @@ ${next}
 - 单镜 durationSec 须在 **${d.perSceneMinSec}～${d.perSceneMaxSec}**。
 
 只输出 JSON：\`{ "scenes": [ ... ] }\`，scenes 数组**恰好** ${chunkEnd - chunkStart + 1} 条，index 依次为 ${chunkStart}…${chunkEnd}。`;
+}
+
+/** 整稿口播 JSON 解析失败时追加到 user */
+export function appendStoryboardVoiceoverRetryInstruction(
+  user: string,
+  parseErrorMessage: string,
+  targetSceneCount: number,
+): string {
+  return `${user}\n\n【自动重试】${parseErrorMessage}\n请只输出合法 JSON：含连贯长稿 **voiceoverFullText**（镜间仅用双换行，切分后恰好 ${targetSceneCount} 段），**paragraphs** 与该切分逐字一致。`;
 }
 
 /** 分块 JSON 解析失败时追加到 user，触发自动重试 */

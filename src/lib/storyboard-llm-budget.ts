@@ -108,13 +108,52 @@ export function chunkSceneIndexRanges(
 }
 
 export function formatStoryboardStrategyLabel(args: {
-  useChunked: boolean;
   videoDurationMin: VideoDurationMin;
   phaseCount: number;
 }): string {
   const d = getVideoDurationPreset(args.videoDurationMin);
-  if (!args.useChunked) {
-    return `单次生成 · max_tokens 已按 ${d.labelShort} 配置`;
+  return `分层生成 · ${args.phaseCount} 阶段（叙事骨架 + 整稿口播 + 分镜扩写 · ${d.labelShort}）`;
+}
+
+/** L3 扩写区间：off=单次扩写全长；auto/on 按档案阈值或多段切分 */
+export function resolveStoryboardExpandRanges(args: {
+  chunkMode: StoryboardChunkMode;
+  videoDurationMin: VideoDurationMin;
+  profile: LlmProfileRow;
+  targetScenes: number;
+}): Array<{ start: number; end: number }> {
+  if (args.chunkMode === "off") {
+    return [{ start: 1, end: args.targetScenes }];
   }
-  return `分块生成 · 1 次脊柱 + ${Math.max(0, args.phaseCount - 1)} 次分镜扩写（${d.labelShort}）`;
+  const multi =
+    args.chunkMode === "on" ||
+    (args.chunkMode === "auto" &&
+      resolveUseChunkedStoryboard({
+        videoDurationMin: args.videoDurationMin,
+        chunkMode: "auto",
+        profile: args.profile,
+      }));
+  if (!multi) {
+    return [{ start: 1, end: args.targetScenes }];
+  }
+  return chunkSceneIndexRanges(args.targetScenes, resolveScenesPerChunk(args.profile));
+}
+
+/** 当前扩写区间为「全长一拳」时用单次 max_tokens，否则用分块额度 */
+export function resolveExpandMaxTokensForRange(args: {
+  rangeStart: number;
+  rangeEnd: number;
+  targetScenes: number;
+  videoDurationMin: VideoDurationMin;
+  profile: LlmProfileRow;
+}): number {
+  const fullSpan =
+    args.rangeStart === 1 && args.rangeEnd === args.targetScenes;
+  if (fullSpan) {
+    return resolveSingleShotMaxTokens({
+      videoDurationMin: args.videoDurationMin,
+      profile: args.profile,
+    });
+  }
+  return resolveChunkMaxTokens(args.profile);
 }

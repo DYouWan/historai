@@ -147,6 +147,95 @@ async function appendMarkdownLog(block: string): Promise<void> {
 }
 
 /**
+ * 文生图等非 Chat Completions 请求：构造与 `appendLlmDebugLog` 兼容的 `promptDebug`，写入同日 `.llm-read.md`。
+ * 若传 `error`，表示未完成或未发起 vendor 调用（校验失败、解析失败、抛错等）。
+ */
+export function buildImageGenerationPromptDebug(args: {
+  driver?: string;
+  model?: string;
+  promptSummary?: string;
+  promptCharCount?: number;
+  referenceImagePassedToVendor?: boolean;
+  resultUrlHint?: string;
+  error?: string;
+}): LlmMessagesDebug {
+  const driver = args.driver?.trim() || "—";
+  const model = args.model?.trim();
+  if (args.error) {
+    const user = (args.promptSummary?.trim() || "—").slice(0, 8000);
+    return {
+      system: `HistorAI 文生图${driver !== "—" ? ` · ${driver}` : ""}`,
+      user,
+      model: model && model.length > 0 ? model : driver,
+      chatCompletionsUrl: "(image generation)",
+      temperature: 0,
+      usesJsonResponseFormat: false,
+      assistantRaw: args.error,
+    };
+  }
+  const ps = args.promptSummary ?? "";
+  const chars = args.promptCharCount ?? ps.length;
+  return {
+    system: `[HistorAI 文生图] ${driver}${model ? ` · ${model}` : ""} · promptChars=${chars} · referenceToVendor=${Boolean(args.referenceImagePassedToVendor)}`,
+    user: ps,
+    model: model && model.length > 0 ? model : driver,
+    chatCompletionsUrl: "(image generation API)",
+    temperature: 0,
+    usesJsonResponseFormat: false,
+    assistantRaw: args.resultUrlHint
+      ? `result_url: ${args.resultUrlHint}`
+      : undefined,
+  };
+}
+
+/**
+ * 图生视频等非 Chat Completions 请求：与 `appendLlmDebugLog` 配套。
+ */
+export function buildVideoGenerationPromptDebug(args: {
+  provider?: string;
+  promptSummary?: string;
+  promptCharCount?: number;
+  imageUrlHint?: string;
+  resultUrlHint?: string;
+  error?: string;
+}): LlmMessagesDebug {
+  const provider = args.provider?.trim() || "—";
+  if (args.error) {
+    const lines: string[] = [];
+    if (args.imageUrlHint?.trim()) {
+      lines.push(`参考图: ${args.imageUrlHint.trim()}`);
+    }
+    if (args.promptSummary?.trim()) {
+      lines.push(`prompt:\n${args.promptSummary.trim()}`);
+    }
+    const user = lines.length > 0 ? lines.join("\n\n").slice(0, 8000) : "—";
+    return {
+      system: `HistorAI 图生视频${provider !== "—" ? ` · ${provider}` : ""}`,
+      user,
+      model: provider,
+      chatCompletionsUrl: "(image-to-video)",
+      temperature: 0,
+      usesJsonResponseFormat: false,
+      assistantRaw: args.error,
+    };
+  }
+  const ps = args.promptSummary ?? "";
+  const chars = args.promptCharCount ?? ps.length;
+  const hint = args.imageUrlHint?.trim();
+  return {
+    system: `[HistorAI 图生视频] ${provider}${hint ? ` · refImage=${hint}` : ""} · promptChars=${chars}`,
+    user: ps,
+    model: provider,
+    chatCompletionsUrl: "(image-to-video API)",
+    temperature: 0,
+    usesJsonResponseFormat: false,
+    assistantRaw: args.resultUrlHint
+      ? `result_url: ${args.resultUrlHint}`
+      : undefined,
+  };
+}
+
+/**
  * 将 LLM 调试明细追加到按日 `YYYY-MM-DD.llm-read.md`。
  * **requestId**：请在 API handler 入口 `createLlmRequestId()` 一次，同一 HTTP 请求内多次 `appendLlmDebugLog` 传同一值；不传则每次追加单独生成（一般不推荐）。
  * 设置 HISTORAI_LLM_LOG=0 可关闭。写入失败只打 console，不抛错。

@@ -1,6 +1,11 @@
 import type { LlmProfileRow } from "@/lib/llm-profiles";
 import { mergeHookIntoFirstSceneNarration } from "@/lib/merge-hook-narration";
-import type { GenerationResult, StoryboardScene } from "@/lib/types";
+import type {
+  GenerationResult,
+  SceneSkeletonEntry,
+  StoryboardPipelinePending,
+  StoryboardScene,
+} from "@/lib/types";
 
 export type RawStoryboardGeneration = {
   hook?: string;
@@ -13,6 +18,10 @@ export type RawStoryboardGeneration = {
   }>;
   factNotes?: string[];
   complianceNote?: string | null;
+  voiceoverFullText?: string;
+  voiceoverParagraphs?: string[];
+  sceneSkeleton?: SceneSkeletonEntry[];
+  pipelinePending?: StoryboardPipelinePending;
 };
 
 /** 与当前成片时长预设的 softMin 对齐；模型总时长偏短时按镜轮询补足。 */
@@ -64,6 +73,26 @@ export function normalizeStoryboardRaw(
   const withHook = mergeHookIntoFirstSceneNarration(hookStr, scenesRaw);
   const scenes = boostSceneDurationsIfShort(withHook, softMinTotalSec);
 
+  let pipelinePending: StoryboardPipelinePending | undefined =
+    raw.pipelinePending === "voiceover" || raw.pipelinePending === "scenes" ?
+      raw.pipelinePending
+    : undefined;
+  if (scenes.length > 0) {
+    pipelinePending = undefined;
+  }
+
+  const skRaw = raw.sceneSkeleton ?? [];
+  const sceneSkeleton: SceneSkeletonEntry[] = skRaw.map((r, i) => ({
+    index: typeof r.index === "number" ? r.index : i + 1,
+    beat: String(r.beat ?? "").trim(),
+    durationSec: Math.min(60, Math.max(2, Number(r.durationSec ?? 6))),
+  }));
+
+  const voiceoverParagraphs = (raw.voiceoverParagraphs ?? []).map((p) =>
+    String(p ?? "").trim(),
+  );
+  const voiceoverFullText = String(raw.voiceoverFullText ?? "").trim();
+
   return {
     provider: "llm",
     llmProfile: {
@@ -80,5 +109,11 @@ export function normalizeStoryboardRaw(
       raw.complianceNote === null || raw.complianceNote === undefined
         ? undefined
         : String(raw.complianceNote),
+    voiceoverFullText:
+      voiceoverFullText ||
+      (voiceoverParagraphs.length ? voiceoverParagraphs.join("\n\n") : ""),
+    voiceoverParagraphs,
+    sceneSkeleton,
+    pipelinePending,
   };
 }

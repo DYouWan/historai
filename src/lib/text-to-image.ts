@@ -24,7 +24,7 @@ function trimApiError(t: string, max = 400) {
 }
 
 /**
- * 写入 jsonl 的 prompt 摘要：须覆盖末尾「本镜口播」「本镜分镜画面」等，避免仅截前 500 字时误判「未用镜 1 visual」。
+ * 写入可读日志（`.llm-read.md`）的 prompt 摘要：须覆盖末尾「本镜口播」「本镜分镜画面」等，避免仅截前 500 字时误判「未用镜 1 visual」。
  */
 function summarizePromptForLog(full: string): string {
   const softMax = 3200;

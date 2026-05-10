@@ -3,6 +3,7 @@
 import type {
   GenerationResult,
   SliceSuggestion,
+  StoryboardSpineSnapshot,
   StylePreset,
   Tone,
   VideoDurationMin,
@@ -55,10 +56,17 @@ const STORYBOARD_CHUNK_OPTIONS: {
 }[] = [
   {
     value: "auto",
-    label: "自动（默认：≥10 分钟走脊柱+分块，见 llm-profiles）",
+    label:
+      "自动（短片一次扩写全长；≥10 分钟按档案切段，见 llm-profiles）",
   },
-  { value: "on", label: "强制分块（脊柱 + 多轮扩写）" },
-  { value: "off", label: "仅单次（整包 JSON，max_tokens 已按时长放大）" },
+  {
+    value: "on",
+    label: "强制切段扩写（叙事骨架 + 整稿口播 + 多轮分镜）",
+  },
+  {
+    value: "off",
+    label: "单次扩写全长（仍含叙事骨架与整稿口播；一轮出齐分镜）",
+  },
 ];
 
 const STYLE_OPTIONS: { id: StylePreset; label: string }[] = [
@@ -139,10 +147,10 @@ const workflowSteps = [
 ] as const;
 
 /** 封面预览条数上限；超出须勾选删除后才可再次生成（并尽量同步删 slice-exports 落盘文件） */
-const MAX_COVER_GALLERY = 3;
+const MAX_COVER_GALLERY = 5;
 
 /** 转为 base64 data URL 后会显著膨胀，控制体积避免请求体过大 */
-const MAX_COVER_REFERENCE_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_COVER_REFERENCE_FILE_BYTES = 20 * 1024 * 1024;
 
 type AssetRow = {
   sceneIndex: number;
@@ -184,6 +192,19 @@ export function PersonStudioWorkspace() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerationResult | null>(null);
+  /** 可编辑整稿口播；按稿重跑 L3 时提交 */
+  const [voiceoverDraft, setVoiceoverDraft] = useState("");
+  /** L1 叙事骨架区块整块可收起，减轻长页滚动 */
+  const [narrativeSkeletonPanelExpanded, setNarrativeSkeletonPanelExpanded] = useState(true);
+  /** L1 内：时间线子块可折叠 */
+  const [narrativeTimelineExpanded, setNarrativeTimelineExpanded] = useState(true);
+  /** L1 内：分镜骨架子块可折叠 */
+  const [narrativeSceneSkeletonExpanded, setNarrativeSceneSkeletonExpanded] = useState(true);
+  /** three-step：L1 → L2 → L3；two-step：L1+L2 → L3；one-step：一次完成 */
+  const [generationPacing, setGenerationPacing] = useState<
+    "three-step" | "two-step" | "one-step"
+  >("three-step");
+  const [polishBusy, setPolishBusy] = useState(false);
   const [assets, setAssets] = useState<Record<number, AssetRow>>({});
   const [coverRequest, setCoverRequest] = useState<CoverRequestState>({
     status: "idle",
@@ -778,6 +799,11 @@ export function PersonStudioWorkspace() {
           stylePreset,
           videoDurationMin,
           storyboardChunkMode,
+          ...(generationPacing === "two-step" ?
+            { stopAfterVoiceover: true }
+          : generationPacing === "three-step" ?
+            { stopAfterSpine: true }
+          : {}),
         }),
       });
       const json = (await res.json()) as GenerationResult | { error?: string };
@@ -788,12 +814,165 @@ export function PersonStudioWorkspace() {
             : "生成失败",
         );
         setResult(null);
+        setVoiceoverDraft("");
         return;
       }
-      setResult(json as GenerationResult);
+      const gen = json as GenerationResult;
+      setResult(gen);
+      setVoiceoverDraft(gen.voiceoverFullText ?? "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "网络错误");
       setResult(null);
+      setVoiceoverDraft("");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /** 三步流程：在已有叙事骨架上仅请求 L2 */
+  const runGenerateVoiceoverOnly = async () => {
+    if (!result || result.pipelinePending !== "voiceover") return;
+    if (!result.sceneSkeleton?.length) return;
+    const snap: StoryboardSpineSnapshot = {
+      hook: result.hook,
+      timeline: result.timeline,
+      sceneSkeleton: result.sceneSkeleton,
+      factNotes: result.factNotes,
+      complianceNote: result.complianceNote ?? null,
+    };
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: profileId || undefined,
+          seriesTitle: seriesTitle.trim() || undefined,
+          sliceTitle: sliceTitle.trim() || undefined,
+          sliceAngle: sliceAngle.trim() || undefined,
+          subject,
+          dynasty: dynasty || undefined,
+          tone,
+          stylePreset,
+          videoDurationMin,
+          storyboardChunkMode,
+          spineSnapshot: snap,
+          generateVoiceoverOnly: true,
+        }),
+      });
+      const json = (await res.json()) as GenerationResult | { error?: string };
+      if (!res.ok) {
+        setError(
+          "error" in json && json.error
+            ? String(json.error)
+            : "生成整稿口播失败",
+        );
+        return;
+      }
+      const gen = json as GenerationResult;
+      setResult(gen);
+      setVoiceoverDraft(gen.voiceoverFullText ?? "");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "网络错误");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runPolishVoiceover = async () => {
+    if (!result?.sceneSkeleton?.length || !voiceoverDraft.trim()) return;
+    setPolishBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/polish-voiceover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: profileId || undefined,
+          paragraphCount: result.sceneSkeleton.length,
+          voiceoverFullText: voiceoverDraft.trim(),
+          hook: result.hook,
+          subject: subject.trim(),
+          seriesTitle: seriesTitle.trim() || undefined,
+          sliceTitle: sliceTitle.trim() || undefined,
+          sliceAngle: sliceAngle.trim() || undefined,
+          dynasty: dynasty.trim() || undefined,
+          tone,
+        }),
+      });
+      const json = (await res.json()) as {
+        error?: string;
+        voiceoverFullText?: string;
+        voiceoverParagraphs?: string[];
+      };
+      if (!res.ok) {
+        setError(json.error ?? "润色失败");
+        return;
+      }
+      const nextFull = json.voiceoverFullText ?? "";
+      setVoiceoverDraft(nextFull);
+      setResult((prev) =>
+        prev ?
+          {
+            ...prev,
+            voiceoverFullText: nextFull,
+            voiceoverParagraphs: json.voiceoverParagraphs ?? prev.voiceoverParagraphs,
+          }
+        : null,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "润色失败");
+    } finally {
+      setPolishBusy(false);
+    }
+  };
+
+  const runRegenerateFromVoiceover = async () => {
+    if (!result?.sceneSkeleton?.length) return;
+    const snap: StoryboardSpineSnapshot = {
+      hook: result.hook,
+      timeline: result.timeline,
+      sceneSkeleton: result.sceneSkeleton,
+      factNotes: result.factNotes,
+      complianceNote: result.complianceNote ?? null,
+    };
+    setLoading(true);
+    setError(null);
+    resetAssets();
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: profileId || undefined,
+          seriesTitle: seriesTitle.trim() || undefined,
+          sliceTitle: sliceTitle.trim() || undefined,
+          sliceAngle: sliceAngle.trim() || undefined,
+          subject,
+          dynasty: dynasty || undefined,
+          tone,
+          stylePreset,
+          videoDurationMin,
+          storyboardChunkMode,
+          spineSnapshot: snap,
+          voiceoverFullTextOverride: voiceoverDraft.trim(),
+        }),
+      });
+      const json = (await res.json()) as GenerationResult | { error?: string };
+      if (!res.ok) {
+        setError(
+          "error" in json && json.error
+            ? String(json.error)
+            : "重新生成分镜失败",
+        );
+        return;
+      }
+      const gen = json as GenerationResult;
+      setResult(gen);
+      setVoiceoverDraft(gen.voiceoverFullText ?? "");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "网络错误");
     } finally {
       setLoading(false);
     }
@@ -1192,7 +1371,7 @@ export function PersonStudioWorkspace() {
       return;
     }
     if (f.size > MAX_COVER_REFERENCE_FILE_BYTES) {
-      setError("参考图请小于 4MB。");
+      setError("参考图请小于 20MB（与 Remit.ee 图床限制一致）。");
       return;
     }
 
@@ -1201,7 +1380,7 @@ export function PersonStudioWorkspace() {
     setCoverRequest({ status: "running" });
 
     try {
-      // 1. 后端直接上传文件到 COS
+      // 1. 后端代理上传到 Remit.ee，得到公网 HTTPS 参考图 URL
       const arrayBuffer = await f.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
       let binary = "";
@@ -1210,7 +1389,7 @@ export function PersonStudioWorkspace() {
       }
       const base64 = btoa(binary);
 
-      const uploadRes = await fetch("/api/upload-to-cos", {
+      const uploadRes = await fetch("/api/upload-reference-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1224,11 +1403,11 @@ export function PersonStudioWorkspace() {
       const uploadJson = await uploadRes.json();
 
       if (!uploadRes.ok) {
-        setCoverRequest({ status: "failed", error: uploadJson.error || "上传到云存储失败" });
+        setCoverRequest({ status: "failed", error: uploadJson.error || "上传到图床失败" });
         return;
       }
 
-      // 2. 使用 COS URL 作为参考图生成封面
+      // 2. 使用图床 URL 作为参考图生成封面
       await runStandaloneCoverRequest(uploadJson.url);
 
     } catch (err) {
@@ -1974,7 +2153,7 @@ export function PersonStudioWorkspace() {
           <footer className="rounded-xl border border-zinc-800/60 bg-zinc-950/30 px-4 py-5 sm:px-5">
             <p className={sectionLabelClass}>步骤 4 · 生成文案与分镜</p>
             <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-zinc-500">
-              先设成片时长、分块与叙事基调，再产出黄金开头、时间线与分镜表；完成后可在下方批量出静帧与图生视频。
+              先设成片时长、扩写切段与叙事基调。选「三步」时叙事骨架与整稿口播分两请求；「两步」一次拿整稿再确认分镜；「一步」直接出分镜表。完成后在下方批量出静帧与图生视频。
             </p>
             <div className="mt-4 grid gap-4 border-t border-zinc-800/70 pt-4 sm:grid-cols-3">
               <label className="block min-w-0">
@@ -1996,7 +2175,7 @@ export function PersonStudioWorkspace() {
                 </select>
               </label>
               <label className="block min-w-0">
-                <span className={groupTitleClass}>分块生成</span>
+                <span className={groupTitleClass}>分镜扩写切段</span>
                 <select
                   className={`${fieldClass} mt-1.5`}
                   value={storyboardChunkMode}
@@ -2029,14 +2208,63 @@ export function PersonStudioWorkspace() {
                 </select>
               </label>
             </div>
+            <label className="mt-4 block">
+              <span className={groupTitleClass}>生成节奏</span>
+              <select
+                className={`${fieldClass} mt-1.5 max-w-xl`}
+                value={generationPacing}
+                onChange={(e) =>
+                  setGenerationPacing(
+                    e.target.value as "three-step" | "two-step" | "one-step",
+                  )
+                }
+              >
+                <option value="three-step">
+                  三步：叙事骨架（L1）→ 整稿口播（L2）→ 分镜（L3），推荐
+                </option>
+                <option value="two-step">
+                  两步：叙事骨架+整稿一次完成 → 再分镜（L3）
+                </option>
+                <option value="one-step">一步：文案与分镜一次完成</option>
+              </select>
+            </label>
             <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <button
                 type="button"
-                onClick={runGenerate}
-                disabled={loading || !subject.trim()}
+                onClick={() => {
+                  if (
+                    generationPacing === "three-step" &&
+                    result?.pipelinePending === "voiceover"
+                  ) {
+                    void runGenerateVoiceoverOnly();
+                  } else {
+                    void runGenerate();
+                  }
+                }}
+                disabled={
+                  loading ||
+                  polishBusy ||
+                  !subject.trim() ||
+                  (result?.pipelinePending === "scenes" &&
+                    (generationPacing === "three-step" ||
+                      generationPacing === "two-step"))
+                }
                 className="inline-flex min-h-[3rem] min-w-[12rem] items-center justify-center rounded-xl bg-amber-500 px-8 text-sm font-semibold text-zinc-950 shadow-lg shadow-amber-950/30 ring-1 ring-amber-400/25 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
               >
-                {loading ? "生成中…" : "生成文案与分镜"}
+                {loading ?
+                  "生成中…"
+                : result?.pipelinePending === "scenes" &&
+                    (generationPacing === "three-step" ||
+                      generationPacing === "two-step") ?
+                  "下一步：整稿区「生成分镜」"
+                : generationPacing === "three-step" &&
+                    result?.pipelinePending === "voiceover" ?
+                  "生成整稿口播（L2）"
+                : generationPacing === "three-step" ?
+                  "生成叙事骨架（L1）"
+                : generationPacing === "two-step" ?
+                  "生成叙事骨架与整稿口播"
+                : "生成文案与分镜（一步完成）"}
               </button>
             </div>
           </footer>
@@ -2052,10 +2280,47 @@ export function PersonStudioWorkspace() {
       {result && (
         <>
           <section className="overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-900/40 p-0 shadow-xl shadow-black/20 ring-1 ring-zinc-800/35">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800/80 bg-zinc-950/30 px-5 py-3 sm:px-6">
-              <h2 className="font-display text-base font-medium text-amber-100/95">
-                黄金开头与时间线
-              </h2>
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 bg-zinc-950/30 px-5 py-3 sm:px-6">
+              <div className="flex min-w-0 flex-1 items-start gap-2 sm:gap-3">
+                <button
+                  type="button"
+                  onClick={() => setNarrativeSkeletonPanelExpanded((v) => !v)}
+                  className="mt-0.5 shrink-0 rounded-lg p-1 text-zinc-500 transition hover:bg-zinc-800/85 hover:text-zinc-200"
+                  aria-expanded={narrativeSkeletonPanelExpanded}
+                  aria-controls="historai-narrative-skeleton-panel-body"
+                  title={
+                    narrativeSkeletonPanelExpanded ?
+                      "收起 L1 叙事骨架"
+                    : "展开 L1 叙事骨架"
+                  }
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden
+                    className={`h-5 w-5 shrink-0 transition-transform duration-200 ${
+                      narrativeSkeletonPanelExpanded ? "rotate-0" : "-rotate-90"
+                    }`}
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+                <div className="min-w-0 flex-1">
+                  <h2 className="font-display text-base font-medium text-amber-100/95">
+                    黄金开头、时间线与分镜骨架
+                  </h2>
+                  <p className="mt-0.5 text-[11px] text-zinc-500">L1 叙事骨架</p>
+                  {!narrativeSkeletonPanelExpanded && result.hook ?
+                    <p className="mt-2 line-clamp-2 text-sm leading-snug text-zinc-400">
+                      {result.hook}
+                    </p>
+                  : null}
+                </div>
+              </div>
               <span className="rounded-full bg-zinc-900/80 px-2.5 py-1 text-[11px] text-zinc-500">
                 来源：
                 {result.llmProfile
@@ -2063,50 +2328,255 @@ export function PersonStudioWorkspace() {
                   : "大模型"}
               </span>
             </div>
-            <div className="p-5 sm:p-6">
-              <p className="text-lg font-medium leading-relaxed text-zinc-100 sm:text-xl">
-                {result.hook}
-              </p>
-              <ol className="mt-6 space-y-4">
-                {result.timeline.map((t, i) => (
-                  <li
-                    key={i}
-                    className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4"
-                  >
-                    {t.label && (
-                      <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
-                        {t.label}
-                      </p>
-                    )}
-                    <p className="mt-2 text-sm leading-relaxed text-zinc-200">
-                      {t.text}
-                    </p>
-                    {t.sources?.length ? (
-                      <p className="mt-2 text-xs text-zinc-500">
-                        参考：{t.sources.join("；")}
-                      </p>
-                    ) : null}
-                  </li>
-                ))}
-              </ol>
-              {result.factNotes?.length ? (
-                <div className="mt-6 rounded-xl border border-amber-900/40 bg-amber-950/20 p-4">
-                  <p className="text-xs font-medium text-amber-200">发布前复核</p>
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-100/80">
-                    {result.factNotes.map((n, i) => (
-                      <li key={i}>{n}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              {result.complianceNote ? (
-                <p className="mt-4 text-sm text-zinc-500">
-                  {result.complianceNote}
+            {narrativeSkeletonPanelExpanded ?
+              <div
+                id="historai-narrative-skeleton-panel-body"
+                className="p-5 sm:p-6"
+              >
+                <p className="text-lg font-medium leading-relaxed text-zinc-100 sm:text-xl">
+                  {result.hook}
                 </p>
-              ) : null}
+
+                <div className="mt-6">
+                  <button
+                    type="button"
+                    onClick={() => setNarrativeTimelineExpanded((v) => !v)}
+                    className="flex w-full items-center gap-2 rounded-lg py-2 pl-0 pr-2 text-left transition hover:bg-zinc-800/40"
+                    aria-expanded={narrativeTimelineExpanded}
+                    aria-controls="historai-l1-timeline"
+                  >
+                    <span className="shrink-0 rounded-lg p-1 text-zinc-500">
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        aria-hidden
+                        className={`h-4 w-4 transition-transform duration-200 ${
+                          narrativeTimelineExpanded ? "rotate-0" : "-rotate-90"
+                        }`}
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    </span>
+                    <span className="text-sm font-semibold text-amber-100/90">
+                      时间线
+                    </span>
+                    <span className="text-xs text-zinc-500">
+                      共 {result.timeline.length} 段
+                    </span>
+                  </button>
+                  {narrativeTimelineExpanded ?
+                    <ol
+                      id="historai-l1-timeline"
+                      className="mt-4 space-y-4"
+                    >
+                      {result.timeline.map((t, i) => (
+                        <li
+                          key={i}
+                          className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4"
+                        >
+                          {t.label && (
+                            <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
+                              {t.label}
+                            </p>
+                          )}
+                          <p className="mt-2 text-sm leading-relaxed text-zinc-200">
+                            {t.text}
+                          </p>
+                          {t.sources?.length ?
+                            <p className="mt-2 text-xs text-zinc-500">
+                              参考：{t.sources.join("；")}
+                            </p>
+                          : null}
+                        </li>
+                      ))}
+                    </ol>
+                  : null}
+                </div>
+
+                {result.sceneSkeleton && result.sceneSkeleton.length > 0 ?
+                  <div className="mt-6">
+                    <button
+                      type="button"
+                      onClick={() => setNarrativeSceneSkeletonExpanded((v) => !v)}
+                      className="flex w-full items-center gap-2 rounded-lg py-2 pl-0 pr-2 text-left transition hover:bg-zinc-800/40"
+                      aria-expanded={narrativeSceneSkeletonExpanded}
+                      aria-controls="historai-l1-scene-skeleton"
+                    >
+                      <span className="shrink-0 rounded-lg p-1 text-zinc-500">
+                        <svg
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                          aria-hidden
+                          className={`h-4 w-4 transition-transform duration-200 ${
+                            narrativeSceneSkeletonExpanded ? "rotate-0" : "-rotate-90"
+                          }`}
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      </span>
+                      <span className="text-sm font-semibold text-amber-100/90">
+                        分镜骨架
+                      </span>
+                      <span className="text-xs text-zinc-500">
+                        共 {result.sceneSkeleton.length} 镜
+                      </span>
+                    </button>
+                    {narrativeSceneSkeletonExpanded ?
+                      <ol
+                        id="historai-l1-scene-skeleton"
+                        className="mt-4 space-y-4"
+                      >
+                        {result.sceneSkeleton.map((row) => (
+                          <li
+                            key={row.index}
+                            className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4"
+                          >
+                            <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
+                              第 {row.index} 镜
+                            </p>
+                            <p className="mt-2 text-sm leading-relaxed text-zinc-200">
+                              {row.beat}
+                            </p>
+                            <p className="mt-2 text-xs text-zinc-500">
+                              目标时长：约 {row.durationSec} 秒
+                            </p>
+                          </li>
+                        ))}
+                      </ol>
+                    : null}
+                  </div>
+                : null}
+                {result.factNotes?.length ?
+                  <div className="mt-6 rounded-xl border border-amber-900/40 bg-amber-950/20 p-4">
+                    <p className="text-xs font-medium text-amber-200">
+                      发布前复核
+                    </p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-100/80">
+                      {result.factNotes.map((n, i) => (
+                        <li key={i}>{n}</li>
+                      ))}
+                    </ul>
+                  </div>
+                : null}
+                {result.complianceNote ?
+                  <p className="mt-4 text-sm text-zinc-500">
+                    {result.complianceNote}
+                  </p>
+                : null}
+              </div>
+            : null}
+          </section>
+
+          <section className="overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-900/40 shadow-xl shadow-black/20 ring-1 ring-zinc-800/35">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800/80 bg-zinc-950/30 px-5 py-3 sm:px-6">
+              <div className="min-w-0 flex-1">
+                <p className={sectionLabelClass}>整稿口播（L2）</p>
+                <h2 className="mt-1 font-display text-base font-medium text-amber-100/95">
+                  {result.pipelinePending === "voiceover" ?
+                    "叙事骨架已定 · 请生成或粘贴整稿口播"
+                  : result.pipelinePending === "scenes" ?
+                    "请确认口播后再生成分镜"
+                  : "顺读主干 · 可编辑后可重出分镜"}
+                </h2>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    polishBusy ||
+                    loading ||
+                    result.pipelinePending === "voiceover" ||
+                    !result.sceneSkeleton?.length ||
+                    !voiceoverDraft.trim()
+                  }
+                  onClick={() => void runPolishVoiceover()}
+                  title="在不改变史实与人称前提下润色口播；段落条数与镜数一致"
+                  className="rounded-lg border border-zinc-600/55 bg-zinc-900/80 px-3 py-2 text-xs font-semibold text-zinc-200 shadow-sm transition hover:border-zinc-500/65 hover:bg-zinc-800/90 disabled:cursor-not-allowed disabled:opacity-40 sm:text-[13px]"
+                >
+                  {polishBusy ? "润色中…" : "AI 润色口播"}
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    polishBusy ||
+                    loading ||
+                    !result.sceneSkeleton?.length ||
+                    !voiceoverDraft.trim()
+                  }
+                  onClick={() => void runRegenerateFromVoiceover()}
+                  title="保留当前 L1（黄金开头、时间线、分镜骨架），按下方口播生成分镜与画面描述（会清空已出图状态）"
+                  className="rounded-lg border border-amber-700/45 bg-amber-500/[0.1] px-3 py-2 text-xs font-semibold text-amber-100 shadow-sm transition hover:border-amber-500/55 hover:bg-amber-500/[0.16] disabled:cursor-not-allowed disabled:opacity-40 sm:text-[13px]"
+                >
+                  {loading ?
+                    "请求中…"
+                  : result.pipelinePending === "scenes" ?
+                    "生成分镜与画面稿"
+                  : "按当前口播重出分镜"}
+                </button>
+              </div>
+            </div>
+            <div className="p-5 sm:p-6">
+              {result.pipelinePending === "voiceover" ? (
+                <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-4 py-6 text-center text-sm text-zinc-400">
+                  尚未生成整稿口播。请点击上方工具栏「
+                  <span className="text-amber-200/90">生成整稿口播（L2）</span>
+                  」，或在本页底部主按钮执行同一步骤。
+                </div>
+              ) : (
+                <>
+                  <p className="mb-3 text-[12px] leading-relaxed text-zinc-500">
+                    以下为当前口播稿。修改后可「AI 润色」或点击右侧「
+                    {result.pipelinePending === "scenes" ?
+                      "生成分镜与画面稿"
+                    : "按当前口播重出分镜"}
+                    」：请在<strong className="text-zinc-400">每镜口播之间留一空行</strong>
+                    ，段数须与镜数一致（
+                    {result.sceneSkeleton?.length ?? result.scenes.length}{" "}
+                    段）。
+                  </p>
+                  <textarea
+                    className={`${fieldClass} min-h-[220px] resize-y font-mono text-[13px] leading-relaxed`}
+                    value={voiceoverDraft}
+                    onChange={(e) => setVoiceoverDraft(e.target.value)}
+                    spellCheck={false}
+                    aria-label="整稿口播"
+                  />
+                </>
+              )}
             </div>
           </section>
 
+          {result.pipelinePending === "voiceover" ? (
+            <section className="rounded-2xl border border-sky-900/35 bg-sky-950/15 px-5 py-4 sm:px-6">
+              <p className="text-sm font-medium text-sky-100/95">
+                当前仅有 L1（黄金开头、时间线、分镜骨架），整稿口播待生成。
+              </p>
+              <p className="mt-2 text-[12px] leading-relaxed text-sky-100/75">
+                使用上方「生成整稿口播（L2）」或页面底部主按钮，完成后再编辑、润色与扩写分镜。
+              </p>
+            </section>
+          ) : null}
+
+          {result.pipelinePending === "scenes" ? (
+            <section className="rounded-2xl border border-amber-900/35 bg-amber-950/15 px-5 py-4 sm:px-6">
+              <p className="text-sm font-medium text-amber-100/95">
+                当前已有整稿口播，尚未生成分镜表（L3）。
+              </p>
+              <p className="mt-2 text-[12px] leading-relaxed text-amber-100/70">
+                确认口播后可「AI 润色」，再点击整稿区「生成分镜与画面稿」；完成后下方会出现分镜表与出图入口。
+              </p>
+            </section>
+          ) : null}
+
+          {result && !result.pipelinePending ? (
           <section className="overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-900/40 shadow-xl shadow-black/20 ring-1 ring-zinc-800/35">
             <div className="flex flex-col gap-4 border-b border-zinc-800/80 bg-gradient-to-r from-zinc-950/80 via-zinc-950/40 to-zinc-950/80 px-5 py-4 sm:px-6">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -2492,6 +2962,7 @@ export function PersonStudioWorkspace() {
               </table>
             </div>
           </section>
+          ) : null}
         </>
       )}
     </div>
