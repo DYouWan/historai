@@ -18,6 +18,7 @@ import {
 import { driverSupportsReferenceImage } from "@/lib/image-coherence";
 import type { ImageProfileDriver } from "@/lib/media-profiles";
 import { ACTIVE_STUDIO_VERTICAL } from "@/lib/studio-verticals";
+import type { SeedancePromptSceneOutput } from "@/lib/seedance-scene-prompts";
 import {
   VOLCENGINE_TTS_VOICE_CUSTOM,
   VOLCENGINE_TTS_VOICE_PRESETS,
@@ -493,6 +494,31 @@ export function PersonStudioWorkspace() {
   const [sceneTtsBatchBusy, setSceneTtsBatchBusy] = useState(false);
   const stopSceneTtsBatchRef = useRef(false);
 
+  const [seedancePromptByIndex, setSeedancePromptByIndex] = useState<
+    Record<number, SeedancePromptSceneOutput>
+  >({});
+  const [seedancePromptBusy, setSeedancePromptBusy] = useState(false);
+  const [seedancePromptError, setSeedancePromptError] = useState<string | null>(
+    null,
+  );
+  /** 非 null 时表示正在为某一镜单独生成 Seedance 文案 */
+  const [seedanceSingleBusyIndex, setSeedanceSingleBusyIndex] = useState<
+    number | null
+  >(null);
+
+  const seedanceResetKey = useMemo(
+    () =>
+      result?.scenes?.length ?
+        `${result.hook ?? ""}|${result.scenes.map((s) => `${s.index}:${s.visualDescription.length}:${s.narration.length}`).join(";")}`
+      : "",
+    [result?.hook, result?.scenes],
+  );
+
+  useEffect(() => {
+    setSeedancePromptByIndex({});
+    setSeedancePromptError(null);
+  }, [seedanceResetKey]);
+
   const saveSliceImageToProject = useCallback(
     async (
       imageUrl: string,
@@ -683,6 +709,125 @@ export function PersonStudioWorkspace() {
           subject.trim(),
       ),
     [result?.scenes.length, volcTtsEffectiveVoiceType, subject],
+  );
+
+  const runBatchSeedancePrompts = useCallback(async () => {
+    if (!result?.scenes.length || !subject.trim()) return;
+    setSeedanceSingleBusyIndex(null);
+    setSeedancePromptBusy(true);
+    setSeedancePromptError(null);
+    try {
+      const res = await fetch("/api/suggest-seedance-prompts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: profileId || undefined,
+          subject: subject.trim(),
+          dynasty: dynasty.trim() || undefined,
+          seriesTitle: seriesTitle.trim() || undefined,
+          sliceTitle: sliceTitle.trim() || undefined,
+          sliceAngle: sliceAngle.trim() || undefined,
+          hook: result.hook,
+          scenes: result.scenes.map((s) => ({
+            index: s.index,
+            visualDescription: s.visualDescription,
+            narration: s.narration,
+            durationSec: s.durationSec,
+          })),
+        }),
+      });
+      const json = (await res.json()) as {
+        error?: string;
+        prompts?: SeedancePromptSceneOutput[];
+      };
+      if (!res.ok) {
+        setSeedancePromptError(json.error ?? "生成失败");
+        return;
+      }
+      const next: Record<number, SeedancePromptSceneOutput> = {};
+      for (const p of json.prompts ?? []) {
+        next[p.index] = p;
+      }
+      setSeedancePromptByIndex(next);
+    } catch (e) {
+      setSeedancePromptError(
+        e instanceof Error ? e.message : "Seedance 文案生成失败",
+      );
+    } finally {
+      setSeedancePromptBusy(false);
+    }
+  }, [
+    profileId,
+    subject,
+    dynasty,
+    seriesTitle,
+    sliceTitle,
+    sliceAngle,
+    result,
+  ]);
+
+  const runSingleSeedancePrompt = useCallback(
+    async (sceneIndex: number) => {
+      if (!result?.scenes.length || !subject.trim()) return;
+      if (seedancePromptBusy) return;
+      const s = result.scenes.find((x) => x.index === sceneIndex);
+      if (!s?.visualDescription.trim()) return;
+      setSeedanceSingleBusyIndex(sceneIndex);
+      setSeedancePromptError(null);
+      try {
+        const res = await fetch("/api/suggest-seedance-prompts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profileId: profileId || undefined,
+            subject: subject.trim(),
+            dynasty: dynasty.trim() || undefined,
+            seriesTitle: seriesTitle.trim() || undefined,
+            sliceTitle: sliceTitle.trim() || undefined,
+            sliceAngle: sliceAngle.trim() || undefined,
+            hook: result.hook,
+            scenes: [
+              {
+                index: s.index,
+                visualDescription: s.visualDescription,
+                narration: s.narration,
+                durationSec: s.durationSec,
+              },
+            ],
+          }),
+        });
+        const json = (await res.json()) as {
+          error?: string;
+          prompts?: SeedancePromptSceneOutput[];
+        };
+        if (!res.ok) {
+          setSeedancePromptError(json.error ?? "生成失败");
+          return;
+        }
+        const p = json.prompts?.[0];
+        if (!p || p.index !== s.index) {
+          setSeedancePromptError("响应未包含本镜 Seedance 文案");
+          return;
+        }
+        setSeedancePromptByIndex((prev) => ({ ...prev, [p.index]: p }));
+      } catch (e) {
+        setSeedancePromptError(
+          e instanceof Error ? e.message : "Seedance 文案生成失败",
+        );
+      } finally {
+        setSeedanceSingleBusyIndex(null);
+      }
+    },
+    [
+      profileId,
+      subject,
+      dynasty,
+      seriesTitle,
+      sliceTitle,
+      sliceAngle,
+      result,
+      seedancePromptBusy,
+    ],
   );
 
   const runExportSliceBundle = useCallback(async () => {
@@ -3117,6 +3262,24 @@ export function PersonStudioWorkspace() {
                   >
                     {exportBundleBusy ? "导出中…" : "导出资源"}
                   </button>
+                  <button
+                    type="button"
+                    disabled={
+                      seedancePromptBusy ||
+                      seedanceSingleBusyIndex !== null ||
+                      loading ||
+                      batchBusy ||
+                      sceneTtsBatchBusy ||
+                      exportBundleBusy ||
+                      !result?.scenes.length ||
+                      !subject.trim()
+                    }
+                    onClick={() => void runBatchSeedancePrompts()}
+                    className={`${storyboardBatchToolbarBtn} ring-1 ring-violet-600/35`}
+                    title="按导演思维拆解各镜 visualDescription，生成 Seedance 图生视频适用文案（分批调用模型）"
+                  >
+                    {seedancePromptBusy ? "生成中…" : "批量 Seedance 文案"}
+                  </button>
                   {batchBusy ? (
                     <button
                       type="button"
@@ -3416,6 +3579,28 @@ export function PersonStudioWorkspace() {
                                 ? "合成中…"
                                 : "生成语音"}
                             </button>
+                            <div className={storyboardOpDivider} />
+                            <button
+                              type="button"
+                              disabled={
+                                seedancePromptBusy ||
+                                seedanceSingleBusyIndex !== null ||
+                                loading ||
+                                batchBusy ||
+                                sceneTtsBatchBusy ||
+                                !subject.trim() ||
+                                !s.visualDescription.trim()
+                              }
+                              title="仅本镜：根据 visualDescription 生成 Seedance 图生视频文案"
+                              className={storyboardOpSecondaryBtn}
+                              onClick={() =>
+                                void runSingleSeedancePrompt(s.index)
+                              }
+                            >
+                              {seedanceSingleBusyIndex === s.index ?
+                                "Seedance…"
+                              : "Seedance 文案"}
+                            </button>
                             {row?.status === "success" && row.url ? (
                               <>
                                 <div className={storyboardOpDivider} />
@@ -3451,6 +3636,75 @@ export function PersonStudioWorkspace() {
               </table>
                 </div>
               </div>
+              {seedancePromptError ? (
+                <p className="mt-3 text-sm leading-relaxed text-rose-300/95">
+                  {seedancePromptError}
+                </p>
+              ) : null}
+              {Object.keys(seedancePromptByIndex).length > 0 ? (
+                <div className="mt-4 rounded-xl border border-violet-900/40 bg-violet-950/[0.12] p-4 ring-1 ring-violet-900/25 sm:p-5">
+                  <p className={sectionLabelClass}>Seedance 图生视频文案</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                    基于 L3 各镜 visualDescription，对照「主体→动作→环境→镜头→风格→约束」输出分析与可直接粘贴的优化提示词；请以<strong className="text-zinc-400">本镜静帧</strong>
+                    为参考图接入 Seedance。
+                  </p>
+                  <div className="mt-3 max-h-[min(70vh,28rem)] space-y-2 overflow-y-auto pr-1">
+                    {result.scenes.map((s) => {
+                      const sd = seedancePromptByIndex[s.index];
+                      if (!sd) return null;
+                      return (
+                        <details
+                          key={`seedance-${s.index}`}
+                          className="group rounded-lg border border-zinc-800/65 bg-zinc-950/45 open:bg-zinc-950/55"
+                        >
+                          <summary className="cursor-pointer list-none px-3 py-2.5 text-sm font-semibold text-violet-100/95 marker:content-none [&::-webkit-details-marker]:hidden">
+                            <span className="inline-flex items-center gap-2">
+                              <span className="tabular-nums">第 {s.index} 镜</span>
+                              <span className="text-[11px] font-normal text-zinc-500">
+                                · Seedance / 图生视频
+                              </span>
+                            </span>
+                          </summary>
+                          <div className="space-y-3 border-t border-zinc-800/55 px-3 py-3 text-[12px] leading-relaxed text-zinc-300">
+                            <div>
+                              <p className="font-semibold text-zinc-400">
+                                图生视频适配度
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap">
+                                {sd.adaptationFit}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="font-semibold text-zinc-400">
+                                Seedance 风格与模板要点
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap">
+                                {sd.officialTemplateNotes}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="font-semibold text-zinc-400">
+                                必要添加项与优化建议
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap">
+                                {sd.suggestions}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="font-semibold text-amber-200/80">
+                                优化参考版本（可粘贴）
+                              </p>
+                              <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg border border-zinc-800/80 bg-zinc-950/80 p-3 font-mono text-[11px] text-zinc-200">
+                                {sd.optimizedPrompt}
+                              </pre>
+                            </div>
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </section>
           ) : null}
