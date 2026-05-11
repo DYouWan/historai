@@ -24,7 +24,7 @@ export type RawStoryboardGeneration = {
   pipelinePending?: StoryboardPipelinePending;
 };
 
-/** 与当前成片时长预设的 softMin 对齐；模型总时长偏短时按镜轮询补足。 */
+/** 与当前叙事时长预设的 softMin 对齐；模型总时长偏短时按镜轮询补足。 */
 export function boostSceneDurationsIfShort(
   scenes: StoryboardScene[],
   softMinTotalSec: number,

@@ -4,7 +4,7 @@ import path from "path";
 export const SLICE_EXPORT_ROOT = "slice-exports";
 
 const IMG_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
-const VID_EXT = new Set([".mp4", ".webm", ".mov"]);
+const AUD_EXT = new Set([".mp3", ".wav", ".m4a", ".aac"]);
 
 export function sanitizeExportSegment(s: string, max: number): string {
   const t = s
@@ -40,19 +40,13 @@ function extFromImageResponse(
   return ".png";
 }
 
-function extFromVideoResponse(
-  contentType: string | null,
-  videoUrl: string,
-): string {
-  const ct = (contentType ?? "").toLowerCase();
-  if (ct.includes("webm")) return ".webm";
-  if (ct.includes("mp4")) return ".mp4";
-  if (ct.includes("quicktime")) return ".mov";
-  const u = videoUrl.split("?")[0].toLowerCase();
-  if (u.endsWith(".webm")) return ".webm";
-  if (u.endsWith(".mp4")) return ".mp4";
-  if (u.endsWith(".mov")) return ".mov";
-  return ".mp4";
+export function extFromAudioMime(mime: string): string {
+  const m = mime.toLowerCase();
+  if (m.includes("wav")) return ".wav";
+  if (m.includes("mpeg") || m.includes("mp3")) return ".mp3";
+  if (m.includes("mp4") || m.includes("audio/mp4")) return ".m4a";
+  if (m.includes("aac")) return ".aac";
+  return ".mp3";
 }
 
 /** 文件名无扩展名部分相对 stem：stem → v1，stem-2 → v2 */
@@ -75,11 +69,10 @@ export async function listVersionedExportFiles(
   cwd: string,
   folderName: string,
   stem: string,
-  kind: "image" | "video",
 ): Promise<Array<{ relativePath: string; version: number }>> {
   const safeStem = sanitizeExportSegment(stem, 96);
   const dir = path.join(cwd, SLICE_EXPORT_ROOT, folderName);
-  const allowed = kind === "image" ? IMG_EXT : VID_EXT;
+  const allowed = IMG_EXT;
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -106,10 +99,41 @@ export async function findLatestVersionedExportFile(
   cwd: string,
   folderName: string,
   stem: string,
-  kind: "image" | "video",
 ): Promise<{ relativePath: string; version: number } | null> {
-  const list = await listVersionedExportFiles(cwd, folderName, stem, kind);
+  const list = await listVersionedExportFiles(cwd, folderName, stem);
   return list.length ? list[list.length - 1]! : null;
+}
+
+/**
+ * 与同 stem 规则的音频版本（mp3/wav/m4a/aac），与静帧 stem 一致、扩展名区分类型。
+ */
+export async function listVersionedAudioExportFiles(
+  cwd: string,
+  folderName: string,
+  stem: string,
+): Promise<Array<{ relativePath: string; version: number }>> {
+  const safeStem = sanitizeExportSegment(stem, 96);
+  const dir = path.join(cwd, SLICE_EXPORT_ROOT, folderName);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: Array<{ relativePath: string; version: number }> = [];
+  for (const f of entries) {
+    const { name, ext } = path.parse(f);
+    if (!AUD_EXT.has(ext.toLowerCase())) continue;
+    const v = parseVersionedStem(name, safeStem);
+    if (v == null) continue;
+    const rel = path
+      .relative(cwd, path.join(dir, f))
+      .split(path.sep)
+      .join("/");
+    out.push({ relativePath: rel, version: v });
+  }
+  out.sort((a, b) => a.version - b.version);
+  return out;
 }
 
 /**
@@ -148,9 +172,8 @@ export async function saveRemoteFileToSliceExports(params: {
   folderName: string;
   baseName: string;
   url: string;
-  kind: "image" | "video";
 }): Promise<{ relativePath: string; fileName: string }> {
-  const { cwd, folderName, baseName, url, kind } = params;
+  const { cwd, folderName, baseName, url } = params;
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     throw new Error("仅支持 http(s) 地址");
   }
@@ -164,16 +187,43 @@ export async function saveRemoteFileToSliceExports(params: {
     throw new Error("文件数据异常");
   }
 
-  const ext =
-    kind === "video" ?
-      extFromVideoResponse(res.headers.get("content-type"), url)
-    : extFromImageResponse(res.headers.get("content-type"), url);
+  const ext = extFromImageResponse(res.headers.get("content-type"), url);
 
   const safeStem = sanitizeExportSegment(baseName, 96);
   const dir = path.join(cwd, SLICE_EXPORT_ROOT, folderName);
   const outPath = await resolveNextVersionedOutPath(dir, safeStem, ext);
 
   await writeFile(outPath, buf);
+  const relativePath = path
+    .relative(cwd, outPath)
+    .split(path.sep)
+    .join("/");
+  const fileName = path.basename(outPath);
+  return { relativePath, fileName };
+}
+
+/**
+ * 将口播等音频二进制写入 `slice-exports/{folderName}/`，与封面保存目录一致；同 stem 已占用则序号 +1。
+ */
+export async function saveAudioBufferToSliceExports(params: {
+  cwd: string;
+  folderName: string;
+  baseName: string;
+  buffer: Buffer;
+  mimeType?: string;
+}): Promise<{ relativePath: string; fileName: string }> {
+  const { cwd, folderName, baseName, buffer } = params;
+  if (buffer.length < 16) {
+    throw new Error("音频数据异常");
+  }
+  const ext = extFromAudioMime(params.mimeType ?? "audio/mpeg");
+  if (!AUD_EXT.has(ext.toLowerCase())) {
+    throw new Error(`不支持的音频扩展名：${ext}`);
+  }
+  const safeStem = sanitizeExportSegment(baseName, 96);
+  const dir = path.join(cwd, SLICE_EXPORT_ROOT, folderName);
+  const outPath = await resolveNextVersionedOutPath(dir, safeStem, ext);
+  await writeFile(outPath, buffer);
   const relativePath = path
     .relative(cwd, outPath)
     .split(path.sep)

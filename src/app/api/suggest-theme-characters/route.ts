@@ -17,6 +17,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       profileId?: string;
       seriesTitle?: string;
+      excludeCharacters?: unknown;
     };
 
     const seriesTitle =
@@ -28,9 +29,17 @@ export async function POST(req: Request) {
       );
     }
 
+    const excludeNames = Array.isArray(body.excludeCharacters)
+      ? body.excludeCharacters
+          .map((x) => (typeof x === "string" ? x.trim() : ""))
+          .filter(Boolean)
+          .slice(0, 40)
+      : [];
+
     const { characters, promptDebug } = await fetchThemeCharacters({
       profileId: body.profileId,
       seriesTitle,
+      ...(excludeNames.length ? { excludeNames } : {}),
     });
 
     await appendLlmDebugLog({
@@ -41,6 +50,7 @@ export async function POST(req: Request) {
         profileId: body.profileId ?? null,
         seriesTitle,
         characterCount: characters.length,
+        excludeCount: excludeNames.length,
       },
     });
 

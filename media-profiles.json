@@ -1,6 +1,26 @@
 {
-  "defaultImageProfileId": "dashscope-qwen-image-2",
-  "defaultVideoProfileId": "volc-seedance-2-pro",
+  "_字段说明": {
+    "根节点": {
+      "defaultImageProfileId": "封面/静帧等未指定媒体档案时默认使用的 imageProfiles[].id。",
+      "imageProfiles": "文生图档案列表；每条对应一种接入方式（driver）与端点配置。"
+    },
+    "每条档案（imageProfiles 数组元素）": {
+      "id": "档案唯一标识；前端提交 imageProfileId 时使用。",
+      "vendor": "供应商标识文案，仅展示用。",
+      "label": "界面展示名称。",
+      "apiKeyEnv": "存放该通路 API Key 的环境变量名（勿把密钥写进本文件）。",
+      "driver": "接入实现：dashscope_qwen_image（阿里云多模态生图）、volcengine_seedream（火山方舟 Seedream）、openai_dalle3（预留）。",
+      "generationUrl": "【dashscope_qwen_image 必填】DashScope 文生图/多模态生成的完整 POST URL（地域不同 URL 可能不同）。",
+      "baseUrl": "【volcengine_seedream 必填】火山方舟 OpenAPI 根地址，如 https://ark.cn-beijing.volces.com/api/v3。",
+      "model": "该档案请求的模型名（DashScope 或方舟控制台中的模型 id）。",
+      "size": "输出分辨率；DashScope 常用如 1080*1920；方舟常用如 1440x2560（依服务商文档）。",
+      "negativePrompt": "负面提示词（若驱动支持）。",
+      "promptExtend": "【DashScope】是否启用服务端提示词扩写。",
+      "watermark": "是否打水印（依服务商与账号策略）。",
+      "responseFormat": "【方舟等】返回图片形式：url 或 b64_json。"
+    }
+  },
+  "defaultImageProfileId": "volc-seedream-5-lite",
   "imageProfiles": [
     {
       "id": "dashscope-qwen-image-2",
@@ -10,70 +30,21 @@
       "driver": "dashscope_qwen_image",
       "generationUrl": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
       "model": "qwen-image-2.0",
-      "size": "1920*1080",
+      "size": "1080*1920",
       "promptExtend": true,
       "watermark": false
     },
     {
       "id": "volc-seedream-5-lite",
       "vendor": "字节火山方舟",
-      "label": "Seedream 5.0 Lite",
+      "label": "Seedream 5.0",
       "apiKeyEnv": "ARK_API_KEY",
       "driver": "volcengine_seedream",
       "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
-      "model": "doubao-seedream-5-0-lite-250428",
-      "size": "2K",
+      "model": "doubao-seedream-5-0-260128",
+      "size": "1440x2560",
       "responseFormat": "url",
       "watermark": false
-    },
-    {
-      "id": "openai-dalle3",
-      "vendor": "OpenAI",
-      "label": "DALL·E 3",
-      "apiKeyEnv": "OPENAI_API_KEY",
-      "driver": "openai_dalle3",
-      "size": "1792x1024"
-    }
-  ],
-  "videoProfiles": [
-    {
-      "id": "volc-seedance-2-pro",
-      "vendor": "字节火山方舟",
-      "label": "Seedance 2.0 Pro",
-      "apiKeyEnv": "ARK_API_KEY",
-      "driver": "volcengine_seedance",
-      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
-      "model": "doubao-seedance-2-0-260128",
-      "resolution": "1080p",
-      "ratio": "16:9",
-      "durationSec": 5,
-      "watermark": false
-    },
-    {
-      "id": "volc-seedance-2-fast",
-      "vendor": "字节火山方舟",
-      "label": "Seedance 2.0 Fast",
-      "apiKeyEnv": "ARK_API_KEY",
-      "driver": "volcengine_seedance",
-      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
-      "model": "doubao-seedance-2-0-fast-260128",
-      "resolution": "720p",
-      "ratio": "16:9",
-      "durationSec": 5,
-      "watermark": false
-    },
-    {
-      "id": "happyhorse-1",
-      "vendor": "HappyHorse",
-      "label": "HappyHorse 1.0 视频",
-      "apiKeyEnv": "HAPPYHORSE_API_KEY",
-      "driver": "happyhorse",
-      "baseUrl": "https://happyhorse.app",
-      "model": "happyhorse-1.0/video",
-      "mode": "pro",
-      "durationSec": 5,
-      "aspectRatio": "16:9",
-      "sound": true
     }
   ]
 }

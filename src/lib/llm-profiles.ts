@@ -10,6 +10,7 @@ const SINGLE_SHOT_DURATION_JSON_KEYS = [
   "5",
   "8",
   "10",
+  "12",
   "15",
 ] as const satisfies readonly `${VideoDurationMin}`[];
 const singleShotDurationKeySet = new Set<string>(
@@ -26,7 +27,7 @@ export type StoryboardProfileConfig = {
   spineMaxTokens?: number;
   /** 每块扩写 max_tokens（默认 18000） */
   chunkMaxTokens?: number;
-  /** 按成片分钟覆盖单次生成的 max_tokens；键为 "1"|"3"|"5"|"8"|"10"|"15" */
+  /** 按成片分钟覆盖单次生成的 max_tokens；键为 "1"|"3"|"5"|"8"|"10"|"12"|"15" */
   singleShotMaxTokensByDuration?: Partial<
     Record<`${VideoDurationMin}`, number>
   >;

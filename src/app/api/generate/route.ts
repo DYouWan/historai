@@ -27,7 +27,7 @@ export async function POST(req: Request) {
       dynasty?: string;
       tone?: Tone;
       stylePreset?: StylePreset;
-      /** 成片目标时长（分钟）：1 / 3 / 5 / 8 / 10 / 15 */
+      /** 叙事目标时长（分钟）：1 / 3 / 5 / 8 / 10 / 12 / 15 */
       videoDurationMin?: number;
       /** 分块：auto | on | off（仅影响 L3 切段；全流程均含叙事骨架+整稿口播） */
       storyboardChunkMode?: string;

@@ -1,6 +1,5 @@
 import {
   listPublicImageProfiles,
-  listPublicVideoProfiles,
   loadMediaProfilesFile,
 } from "@/lib/media-profiles";
 import { NextResponse } from "next/server";
@@ -12,9 +11,7 @@ export async function GET() {
     const file = loadMediaProfilesFile();
     return NextResponse.json({
       defaultImageProfileId: file.defaultImageProfileId ?? null,
-      defaultVideoProfileId: file.defaultVideoProfileId ?? null,
       imageProfiles: listPublicImageProfiles(file),
-      videoProfiles: listPublicVideoProfiles(file),
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "读取媒体模型配置失败";

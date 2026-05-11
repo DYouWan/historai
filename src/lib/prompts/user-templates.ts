@@ -2,83 +2,75 @@
  * User Templates - User Prompt 模板（动态参数部分）
  */
 
-import { randomUUID } from "node:crypto";
+import { themeAxisHintForSeries } from "@/lib/prompts/series-prompts";
 
 /**
- * AI 生成系列名 - User Prompt 模板
+ * 推荐人物 - User Prompt（系列名 + 任务；规则见 CHAR_SYSTEM）
+ * @param excludeNames 上一轮已在界面展示过的人选，须从本次输出中排除（逐字一致）
  */
-export function buildSeriesNameUserPrompt(hint?: string): string {
-  const nonce = randomUUID();
-  const lines: string[] = [];
-  const h = hint?.trim();
-  if (h) {
-    lines.push(`用户方向（须尽量贴合，但不违背峰值叙事定位）：「${h}」`);
-  }
-  lines.push(
-    `请求令牌：${nonce}`,
-    "同一接口可能连续调用：请根据令牌产出一条新的系列名称，轮换切入点。",
-    "",
-    '只输出 JSON：{"suggestion":"…"}',
-    "注意：只写正题一句，字段内不要出现冒号，不要用顿号串联多个人名。",
-  );
-  return lines.join("\n");
-}
-
-/**
- * 推荐人物 - User Prompt 模板
- */
-export function buildCharacterRecommendUserPrompt(seriesTitle: string): string {
+export function buildCharacterRecommendUserPrompt(
+  seriesTitle: string,
+  excludeNames?: string[],
+): string {
   const theme = seriesTitle.trim();
-  const lines = [
-    `人物向系列名称：「${theme}」`,
-    "---",
-    "请列出 **8～12** 个**互不重复**的具体历史人物（仅人名或史书最短常用称谓），作为本系列下**后续可选的单支短片主角人选**。",
-    "",
-    "【本步产出边界】",
-    "- 只输出**姓名列表**，供界面点选；**不要**写切片标题、选题句、剧情梗概或「这一支讲什么」——那些属于用户选人之后的下一步。",
-    "- 人选理由内化即可：每人应能让人设想「若只做一支峰值叙事短片，此人身上有可讲的单点高峰」，但无需在 JSON 里解释。",
-    "",
-    "【人选主体】",
-    "- **全部为具体历史人物个人**：每人须有可查的**个人向戏剧性瞬间**（沙场对决、君臣摊牌、临危一言、翻盘、争议标签、绝境抉择等），使之适合将来做成**一支**短片的主角，而非只适合生平串讲。",
-    "- **禁止任何群体/组织/军队类条目**：勿输出并称群体、集团、派系、军队名号、兵种统称（例如「大顺文官集团」「关宁铁骑」等均不允许）；若题材涉及某势力，请改为该势力中**最具戏剧性的具体人物**。",
-    "- 禁止单独「朝代」「思潮」「古人」「帝王」等品类词充当一条候选。",
-    "",
-    "【叙事张力】",
-    "- 每条须有明确戏剧张力，勿堆砌泛泛名人；勿混入集体称谓。",
-    "- **避免**：只适合百科式从出生讲到死的对象扎堆。",
-    "",
-    "【称谓格式（界面 chips 用）】",
-    "- 每项 **2～5 字为宜**：优先**姓名**（如「朱由检」「吴三桂」「史可法」）。",
-    "- **不要**头衔缀全名：禁止「崇祯帝朱由检」「南明弘光帝朱由崧」这类写法；皇帝用**姓名**即可，或与大众认知一致的**单一**年号/庙号简称（择一，勿拼接）。",
-    "",
-    "只输出 JSON，结构如下：",
-    '{"characters":["曹操","荀彧","…"]}',
-  ];
-  return lines.join("\n");
+  const head = `人物向系列名称：「${theme}」
+---
+请生成本系列可选主角人选列表（8～12 个，互不重复）。`;
+
+  const cleaned = Array.from(
+    new Set(
+      (excludeNames ?? [])
+        .map((n) => String(n ?? "").trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 40);
+
+  if (!cleaned.length) return head;
+
+  const bullets = cleaned.map((n) => `- ${n}`).join("\n");
+  return `${head}
+
+【须排除】下列称谓不得出现在本次 characters 列表中（勿换同一人之别称重复输出）：
+${bullets}`;
 }
 
 /**
- * 推荐切片标题 - User Prompt 模板
+ * 推荐切片标题 - User Prompt（系列名 + 对象 + 任务；规则见 SLICE_SYSTEM）
+ * @param excludeTitles 上一轮已在界面展示过的 title，本次不得再输出相同字符串
  */
 export function buildSliceRecommendUserPrompt(
   seriesTitle: string,
   characterName: string,
+  excludeTitles?: string[],
 ): string {
   const theme = seriesTitle.trim();
   const ch = characterName.trim();
-  return `人物向系列名称：「${theme}」
-核心人物/对象：「${ch}」
----
-请生成 **6～8** 条互不相同的**峰值切片**方案（单点高峰、零生平汇总），只输出 JSON，结构严格为：
-{"suggestions":[{"title":"…","angle":"…"}]}
+  const axis = themeAxisHintForSeries(theme);
+  const axisBlock =
+    axis ?
+      `
+【本系列轴线】
+${axis}`
+    : "";
 
-对每条的要求：
-- title：**短而利**，**不得超过 24 字（含标点）**，**宜 18～22 字**；**现代白话**口述感，**禁止**文言、半文半白；**只写钩子**，场面与赌注放 angle；**勿用破折号、省略号**拉长；勿把剧情写满标题。须点题本系列与该对象。若「核心人物/对象」为**单一具体个人**：**每条 title 都必须含「我」**，且**不得以「他们」起句或撑满主视角**。**群体**主角时须以「他们」作主语，**禁用「我们」**。
-- **句式多样化（硬约束）**：须轮换使用**至少四种**不同句式（短问句、陈述悬念、反差一句、含「史称/一说」分寸的钩子、非问句强对撞等）；**禁止**大半条共用「我……时，……——……？」一类骨架。
-- angle：**连贯 1～3 句**，**现代白话**，个人「我」/ 群体「他们」；写明**这一关的冲突或巅峰场面**，并点出 **stakes**；须在 title **之外**补充实体信息，**禁止**仅复述或扩写标题同一句意思；**无依据勿写**个位次数、人数、滴数、声数等堆砌。
-- **峰值类型（硬约束）**：以**酷刑、虐杀、血腥恐吓**为核心卖点的 title **至多 2 条**，**其余每条**须为其他类型峰值（机锋、名分僵局、一语定局、争议标签、两难、误读与回旋等）；**禁止**多条只换场景不换跑道。
-- **彼此拉开**：条目勿同质；勿 6～8 条全是同一情绪配方。
-- **典故勿串戏**：脍炙人口的桥段须对得起常识；**勿为了戏剧性改写大众熟知的核心锚点**（若写著名场面，勿把公认情节拧成另一件事）。吃不准用「一说」或含糊钩子。
-- 数字：**勿杜撰**确数；全列表**至多 1 条** title 出现「具体到个位」的数字钩子，其余用问号、定性对照或「史称/一说/约」。
-- 整条列表中：**不少于 3 条** title 使用「…？」**或**等效的强悬念陈述（不必条条问号）；数字类钩子按上条上限执行。`;
+  const head = `人物向系列名称：「${theme}」
+核心人物/对象：「${ch}」${axisBlock}
+---
+请生成峰值切片方案（6～8 条，互不重复，单点高峰）。只输出 JSON：{"suggestions":[{"title":"…","angle":"…"}]}`;
+
+  const cleaned = Array.from(
+    new Set(
+      (excludeTitles ?? [])
+        .map((t) => String(t ?? "").trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 40);
+
+  if (!cleaned.length) return head;
+
+  const bullets = cleaned.map((t) => `- ${t}`).join("\n");
+  return `${head}
+
+【须排除】下列 title 不得出现在本次 suggestions 中（须全新切口）：
+${bullets}`;
 }

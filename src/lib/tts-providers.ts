@@ -35,6 +35,32 @@ function trimErr(t: string, max = 500) {
   return t.replace(/\s+/g, " ").slice(0, max);
 }
 
+/**
+ * 文档《音色列表》流式列为 VC_BV700_streaming；HTTP 非流式示例《参数基本说明》为 BV700_streaming。
+ * 传 VC_ 前缀时部分账号会报 [resource_id=] requested resource not granted，故在 HTTP 请求前去掉 VC_。
+ * @see https://www.volcengine.com/docs/6561/79823?lang=zh
+ */
+function normalizeVolcengineHttpVoiceType(voiceType: string): string {
+  const v = voiceType.trim();
+  if (v.startsWith("VC_")) return v.slice(3);
+  return v;
+}
+
+function volcengineResourceDeniedHint(apiMessage: string): string {
+  const base = `火山 TTS 失败：${apiMessage}`;
+  if (
+    !/resource_id|requested resource not granted|access denied/i.test(
+      apiMessage,
+    )
+  ) {
+    return base;
+  }
+  return (
+    `${base}\n` +
+    "常见原因：① 控制台未开通「语音合成」或当前音色无授权（部分音色需在控制台 0 元下单）；② appId/token 与语音应用不一致；③ cluster 须与控制台「语音合成」服务显示的集群 ID 一致（尝试设置 VOLCENGINE_TTS_CLUSTER，常见为 volcano_tts；少数为 volcano_icl 等）。详见 https://www.volcengine.com/docs/6561/111522?lang=zh"
+  );
+}
+
 export async function synthesizeVolcengineTts(
   params: VolcengineTtsParams,
 ): Promise<{ buffer: Buffer; mimeType: TtsMimeType }> {
@@ -47,7 +73,8 @@ export async function synthesizeVolcengineTts(
   if (!text) throw new Error("火山 TTS：文本为空");
 
   const cluster = params.cluster?.trim() || "volcano_tts";
-  const voiceType = params.voiceType?.trim() || "BV700_streaming";
+  const voiceTypeRaw = params.voiceType?.trim() || "BV700_streaming";
+  const voiceType = normalizeVolcengineHttpVoiceType(voiceTypeRaw);
   const encoding = params.encoding ?? "mp3";
 
   const body = {
@@ -95,7 +122,7 @@ export async function synthesizeVolcengineTts(
   const code = obj.code;
   if (code !== undefined && code !== 0 && code !== 3000) {
     const msg = typeof obj.message === "string" ? obj.message : String(code);
-    throw new Error(`火山 TTS 失败：${msg}`);
+    throw new Error(volcengineResourceDeniedHint(msg));
   }
 
   let b64: string | undefined;

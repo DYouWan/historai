@@ -22,7 +22,7 @@ export function anchorSubjectLabelForImage(subject?: string | null): string {
   return IMAGE_SUBJECT_FALLBACK_ANCHOR;
 }
 
-/** 封面：切题底图 + 纯画面（无任何内嵌文案，供后期人工叠字） */
+/** 封面：竖屏外宣底图；纯画面无内嵌字（供后期叠字） */
 export function buildCoverBaseOnlyPromptSnippet(opts: {
   subject?: string | null;
   seriesTitle?: string | null;
@@ -36,36 +36,45 @@ export function buildCoverBaseOnlyPromptSnippet(opts: {
   const angleClip = angle ?
     safePromptInline(angle, SLICE_ANGLE_COVER_PROMPT_MAX)
   : "";
-  const titleShort = slice ?
-    safePromptInline(slice, 80)
-  : series ?
-    safePromptInline(series, 80)
-  : "";
-  const seriesContext = series ? safePromptInline(series, 64) : "";
+  const seriesCtx = series ? safePromptInline(series, 80) : "";
 
-  const propositionBlock =
-    angleClip ?
-      `【切片命题｜封面须优先落实】以下为用户填写的**切口说明**，画面构图、典型瞬间、对峙关系、环境氛围、情绪张力须**主要**由此提炼，避免只套用泛化系列名而与命题脱节：${angleClip}`
-    : `【切片命题】用户未填切口说明：请结合「切片标题／系列」与主角，提炼单一高峰瞬间的具象画面。`;
+  const lines: string[] = [];
 
-  const titleBlock = titleShort ?
-    `【切片标题（辅助点题）】「${titleShort}」。`
-  : "";
-  const seriesBlock =
-    seriesContext && angleClip ?
-      `【人物向系列（语境）】「${seriesContext}」——须与命题一致，勿用系列名盖过切口说明。`
-    : seriesContext ?
-      `【人物向系列】「${seriesContext}」。`
-    : "";
-
-  return (
-    `【封面底图｜纯画面】历史短视频**外宣/列表用竖屏底图**：须像「这一支只讲这一下」的电影感瞬间，避免泛古代肖像或无关场面。主角须与「${protagonist}」一致，且为画面唯一视觉中心。`
-  ).concat(
-    propositionBlock,
-    titleBlock,
-    seriesBlock,
-    `【严禁内嵌任何文字】画面中不得出现可读汉字、英文字母、数字贴片、水印、字幕条、角标 logo、印刷字、匾额对联、条幅标语等（含潦草手写体字幕）；不要求也不允许生成封面标题——**留白由后期人工配字**。可适当在上部或一侧保留干净天空、幔帐、单色墙面等柔和留白，便于成片叠字；不要画空白字框或明显「预留字形」占位。构图适合竖屏短视频首帧裁剪。`,
+  lines.push(
+    `【封面底图｜竖屏外宣】唯一视觉中心「${protagonist}」。电影感单帧，忌泛古代肖像或与命题无关的场面。`,
   );
+
+  if (angleClip) {
+    lines.push(`【切口说明｜优先】${angleClip}`);
+  } else {
+    lines.push(
+      `【切口说明】未填：据下列标题/系列与主角，提炼本支「单一高峰」的具象画面。`,
+    );
+  }
+
+  if (slice) {
+    lines.push(`【切片标题】「${safePromptInline(slice, 80)}」`);
+  }
+
+  if (seriesCtx) {
+    if (angleClip && slice) {
+      lines.push(
+        `【系列语境】「${seriesCtx}」须与切口一致，勿让系列名喧宾夺主。`,
+      );
+    } else if (angleClip && !slice) {
+      lines.push(`【系列语境】「${seriesCtx}」`);
+    } else if (!angleClip && slice) {
+      lines.push(`【系列】「${seriesCtx}」`);
+    } else {
+      lines.push(`【系列选题】「${seriesCtx}」`);
+    }
+  }
+
+  lines.push(
+    `【禁止内嵌字】不得出现可读汉字、字母、数字贴片、水印、logo、匾额对联等；不留空白字框；可留天空/幔帐/单色墙等柔留白供后期叠字。构图适配竖屏首帧裁剪。`,
+  );
+
+  return lines.join("\n");
 }
 
 export function clipNarrationForImagePrompt(n?: string | null): string {
@@ -75,9 +84,9 @@ export function clipNarrationForImagePrompt(n?: string | null): string {
   return `${t.slice(0, NARRATION_IN_IMAGE_PROMPT_MAX)}…`;
 }
 
-/** 独立封面：仅文本命题 + 画风；不向模型注入「第几镜」等产品概念 */
+/** 独立封面尾缀：画风与成片用途（命题已在上方分段给出） */
 export function standaloneCoverVisualGuide(stylePreset: string): string {
-  return `【封面画面】「${stylePreset}」画风；竖屏**单帧静图**。构图、环境、光影与**戏剧张力**须严格贴合上文「切片命题／标题／系列语境」；电影感留白便于后期叠字；自成一张可单独用作列表首帧、信息完整的画面。`;
+  return `【画风与成片】「${stylePreset}」；光影与戏剧张力贴合上文命题；可作信息流列表首帧。`;
 }
 
 /** 与本镜 narration 对齐的说明片段（可无） */
@@ -89,16 +98,14 @@ export function narrationCoherenceSnippet(narration?: string | null): string {
 
 export function buildStandaloneCoverLead(hasReference: boolean): string {
   return hasReference ?
-      "【竖屏封面底图｜参考重生】"
-    : "【竖屏封面底图】列表或外宣用的单帧首图；只根据下文切片命题、标题、系列语境与主角作画。";
+    "【任务】参考图重生外宣竖屏底图：保留人物相貌与衣冠主色，场景与构图按下文命题重设。"
+  : "【任务】文生外宣竖屏底图：仅依据下文命题与主角，纯画面无字。";
 }
 
 export function buildCoverReferenceFigureIntro(): string {
-  return [
-    "【参考图｜图生图·封面重生】首条消息中的参考图来自用户指定的竖屏封面或人物定妆。",
-    "请**保留**参考图中主角的面部结构、年龄气质、须发样式、衣冠形制与主色系，避免换脸成另一历史人物；",
-    "在此人物一致性的前提下，依据下方「切片命题／切片标题／系列语境」**重新设计**场景环境、机位、肢体、道具与光影戏剧张力，生成一张**新的**外宣竖屏底图（构图可与参考不同）。",
-  ].join("");
+  return (
+    "【参考图】延续参考中的面部结构与衣冠主色，勿换脸；场景、机位、光影与道具按下方命题新建，可与参考构图不同。"
+  );
 }
 
 export function buildProtagonistLineCoverPrimary(name: string): string {

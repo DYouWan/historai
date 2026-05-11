@@ -1,6 +1,6 @@
 import type { VideoDurationMin } from "@/lib/types";
 
-/** 界面「成片时长」与主生成硬约束（镜数、总秒数、timeline 段数等） */
+/** 界面「叙事时长」与主生成硬约束（镜数、总秒数、timeline 段数等） */
 export interface VideoDurationPreset {
   minutes: VideoDurationMin;
   /** 用于 system / 用户提示的短标签 */
@@ -124,6 +124,25 @@ export const VIDEO_DURATION_PRESETS: Record<
     perScenePreferredLabel: "6～11",
     shortSceneWarnBelow: 4,
   },
+  12: {
+    minutes: 12,
+    labelShort: "约 12 分钟",
+    minScenes: 81,
+    maxScenes: 107,
+    midStreakMin: 56,
+    minTotalSec: 672,
+    maxTotalSec: 768,
+    softMinTotalSec: 652,
+    timelineMin: 12,
+    timelineMax: 18,
+    metaphorFromSceneApprox: 60,
+    perSceneCenterSec: 7,
+    perSceneMinSec: 5,
+    perSceneMaxSec: 12,
+    perSceneRangeLabel: "5～12",
+    perScenePreferredLabel: "6～11",
+    shortSceneWarnBelow: 4,
+  },
   15: {
     minutes: 15,
     labelShort: "约 15 分钟",
@@ -147,7 +166,16 @@ export const VIDEO_DURATION_PRESETS: Record<
 
 export function parseVideoDurationMin(v: unknown): VideoDurationMin {
   const n = Number(v);
-  if (n === 3 || n === 5 || n === 8 || n === 10 || n === 15) return n;
+  if (
+    n === 3 ||
+    n === 5 ||
+    n === 8 ||
+    n === 10 ||
+    n === 12 ||
+    n === 15
+  ) {
+    return n;
+  }
   return 1;
 }
 
@@ -187,6 +215,10 @@ export const VIDEO_DURATION_UI_OPTIONS: {
   {
     value: 10,
     label: "约 10 分钟（68～92 镜）",
+  },
+  {
+    value: 12,
+    label: "约 12 分钟（81～107 镜）",
   },
   {
     value: 15,

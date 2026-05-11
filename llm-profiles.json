@@ -1,27 +1,78 @@
 {
-  "defaultProfileId": "deepseek-chat",
+  "_字段说明": {
+    "根节点": {
+      "defaultProfileId": "未传 profileId 时默认选用的 profiles[].id（人物工作台等）。",
+      "profiles": "大模型档案数组：每条含 Chat Completions 地址、密钥环境变量名与 storyboard 预算（可选）。"
+    },
+    "每条档案（profiles[]）": {
+      "id": "档案唯一 id；请求里 profileId 与之对应。",
+      "vendor": "供应商标识，仅展示。",
+      "label": "界面展示名。",
+      "chatCompletionsUrl": "OpenAI 兼容 chat/completions 的完整 URL。",
+      "apiKeyEnv": "API Key 所在环境变量名；密钥勿写入本文件。",
+      "model": "请求体中的 model 字段。",
+      "supportsJsonObject": "true 时附带 response_format=json_object；false 时不传（部分兼容接口不支持 JSON 模式）。"
+    },
+    "storyboard（可选；仅主生成叙事流水线 spine/L2/L3 读取）": {
+      "chunkThresholdMinutes": "默认 10。仅在界面「分镜扩写切段」为 auto 时参与判断：叙事时长（分钟）≥ 此值则 L3 按镜号切段多轮扩写；低于则 L3 常用单轮覆盖全部镜（仍走 L1+L2）。若 forceChunked/disableChunked 见下条。",
+      "scenesPerChunk": "默认 18；实际使用时会限制在 4～40。L3 切段时每一轮最多覆盖的 scene 条数（连续镜号区间）。",
+      "spineMaxTokens": "默认 12000。仅 L1 叙事骨架单次 completion 的 max_tokens；与下列额度一样经 maxTokensHardCap 裁剪，且实施侧不少于 256。",
+      "chunkMaxTokens": "默认 18000。仅 L3 某一镜号区间「非全长」（例如 1～18 而总量 80）时该轮 completion 的 max_tokens；经 maxTokensHardCap 裁剪。",
+      "maxTokensHardCap": "默认 65536。本档案下 spine / chunk / singleShot 三类解析出的 max_tokens 统一不得超过此值（应用内保险丝，≠厂商「最大输出长度」规格；宜 ≤ 模型文档中的单次输出上限）。",
+      "singleShotMaxTokensByDuration": "键为叙事时长档位字符串：\"1\"|\"3\"|\"5\"|\"8\"|\"10\"|\"12\"|\"15\"。缺省键时用代码内建默认表。用于 resolveSingleShotMaxTokens：① L2 整稿口播始终用当前档位；② L3 仅当扩写区间为镜 1～末镜「一整段」时用当前档位。均再经 maxTokensHardCap 裁剪。",
+      "forceChunked": "【可选，默认不启用】为 true 时：界面 auto 下也会判定「应切段」（resolveUseChunkedStoryboard 恒 true）。L3 仍按 scenesPerChunk 划区间；若总镜数不足一块则只有一轮，且该轮若为全长则 max_tokens 仍走 singleShot 档位而非 chunkMaxTokens。",
+      "disableChunked": "【可选，默认不启用】为 true 时：仅在界面为 auto 时阻止切段（resolveUseChunkedStoryboard 恒 false）。若界面选「强制切段 on」，当前实现仍会切段，此项不覆盖 on。与 forceChunked 勿同时为 true。"
+    }
+  },
+  "defaultProfileId": "deepseek-v4-flash",
   "profiles": [
     {
-      "id": "deepseek-chat",
+      "id": "deepseek-v4-flash",
       "vendor": "DeepSeek",
-      "label": "DeepSeek Chat",
+      "label": "DeepSeek V4 Flash",
       "chatCompletionsUrl": "https://api.deepseek.com/chat/completions",
       "apiKeyEnv": "DEEPSEEK_API_KEY",
-      "model": "deepseek-chat",
+      "model": "deepseek-v4-flash",
       "supportsJsonObject": true,
       "storyboard": {
         "chunkThresholdMinutes": 10,
         "scenesPerChunk": 18,
-        "spineMaxTokens": 12000,
-        "chunkMaxTokens": 18000,
-        "maxTokensHardCap": 65536,
+        "spineMaxTokens": 16000,
+        "chunkMaxTokens": 32000,
+        "maxTokensHardCap": 131072,
         "singleShotMaxTokensByDuration": {
           "1": 8192,
           "3": 14000,
-          "5": 22000,
-          "8": 26000,
-          "10": 32000,
-          "15": 48000
+          "5": 30000,
+          "8": 42000,
+          "10": 56000,
+          "12": 65600,
+          "15": 80000
+        }
+      }
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "vendor": "DeepSeek",
+      "label": "DeepSeek V4 Pro",
+      "chatCompletionsUrl": "https://api.deepseek.com/chat/completions",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-pro",
+      "supportsJsonObject": true,
+      "storyboard": {
+        "chunkThresholdMinutes": 10,
+        "scenesPerChunk": 18,
+        "spineMaxTokens": 16000,
+        "chunkMaxTokens": 32000,
+        "maxTokensHardCap": 131072,
+        "singleShotMaxTokensByDuration": {
+          "1": 8192,
+          "3": 14000,
+          "5": 30000,
+          "8": 42000,
+          "10": 56000,
+          "12": 65600,
+          "15": 80000
         }
       }
     },
@@ -45,13 +96,14 @@
           "5": 20000,
           "8": 26000,
           "10": 30000,
+          "12": 31107,
           "15": 32768
         }
       }
     },
     {
       "id": "qwen-turbo",
-      "vendor": "通义千问",
+      "vendor": "阿里云 DashScope",
       "label": "Qwen Turbo",
       "chatCompletionsUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
       "apiKeyEnv": "DASHSCOPE_API_KEY",
@@ -69,6 +121,7 @@
           "5": 8192,
           "8": 8192,
           "10": 8192,
+          "12": 8192,
           "15": 8192
         },
         "disableChunked": false

@@ -8,7 +8,6 @@ import {
   buildDynastyLineShort,
   buildFollowSceneImg2ImgLead,
   buildFollowSceneTextOnlyLead,
-  buildProtagonistLineCoverPrimary,
   buildProtagonistLineSimple,
   buildScene1OpeningPrompt,
   buildStandaloneCoverLead,
@@ -91,7 +90,6 @@ export function planImageCoherencePrompt(args: {
     const fullPrompt = [
       buildStandaloneCoverLead(hasRef),
       refIntro,
-      buildProtagonistLineCoverPrimary(name),
       dynasty ? buildDynastyLineNarrative(dynasty) : "",
       coverBaseSnippet,
       `【造型锚点】${anchorZh}`,
@@ -99,7 +97,7 @@ export function planImageCoherencePrompt(args: {
       guide,
     ]
       .filter(Boolean)
-      .join(" ");
+      .join("\n\n");
 
     return {
       sceneRole: "cover",

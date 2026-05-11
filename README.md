@@ -1,6 +1,6 @@
 # HistorAI
 
-基于 Next.js 的 AI 历史故事创作平台，集成多家大模型（DeepSeek、通义千问等）与多媒体生成（文生图、图生视频）。
+基于 Next.js 的 AI 历史故事创作平台，集成多家大模型（DeepSeek、通义千问等）与文生图等多媒体能力。
 
 ## 环境要求
 
@@ -40,8 +40,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 |------|------|
 | `DEEPSEEK_API_KEY` | DeepSeek 文本模型 |
 | `DASHSCOPE_API_KEY` | 通义千问 / 阿里云文生图 |
-| `ARK_API_KEY` | 火山引擎（Seedream 文生图、Seedance 图生视频） |
-| `HAPPYHORSE_API_KEY` | HappyHorse 图生视频 |
+| `ARK_API_KEY` | 火山引擎 Seedream 等文生图 |
 | `OPENAI_API_KEY` | OpenAI DALL·E 3 文生图 |
 | — | 「按参考图重生」参考图由服务端代理上传到 [Remit.ee](https://img.remit.ee/#upload)，无需额外环境变量 |
 

@@ -2,8 +2,8 @@
 
 export type Tone = "serious" | "narrative";
 
-/** 成片目标时长（分钟）：决定主生成提示中的镜数与总时长硬约束 */
-export type VideoDurationMin = 1 | 3 | 5 | 8 | 10 | 15;
+/** 叙事目标时长（分钟）：决定主生成提示中的镜数与总时长硬约束 */
+export type VideoDurationMin = 1 | 3 | 5 | 8 | 10 | 12 | 15;
 
 /** 流水线未完成阶段：仅有叙事骨架待整稿；已有整稿待分镜扩写 */
 export type StoryboardPipelinePending = "voiceover" | "scenes";
@@ -100,7 +100,6 @@ export interface AssetJob {
   status: "idle" | "queued" | "running" | "success" | "failed";
   imageUrl?: string;
   error?: string;
-  approved?: boolean;
   provider: "openai";
 }
 

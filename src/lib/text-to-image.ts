@@ -93,7 +93,7 @@ async function dashscopeQwenMultimodal(params: {
         "low resolution, worst quality, malformed hands, blurry text, wrong identity, face swap",
       prompt_extend: params.profile.promptExtend !== false,
       watermark: params.profile.watermark === true,
-      size: params.profile.size ?? "1920*1080",
+      size: params.profile.size ?? "1080*1920",
       n: 1,
       seed: seedFromString(
         `${params.projectSeed}|scene|${params.sceneIndex}`,
@@ -147,7 +147,7 @@ async function volcengineSeedream(params: {
   const body: Record<string, unknown> = {
     model: params.profile.model,
     prompt: params.fullPrompt.slice(0, 2000),
-    size: params.profile.size ?? "2K",
+    size: params.profile.size ?? "1440x2560",
     response_format: params.profile.responseFormat ?? "url",
     watermark: params.profile.watermark === true,
     n: 1,

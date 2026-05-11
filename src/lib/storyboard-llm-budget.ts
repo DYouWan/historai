@@ -2,10 +2,12 @@ import type { LlmProfileRow } from "@/lib/llm-profiles";
 import type { VideoDurationMin } from "@/lib/types";
 import { getVideoDurationPreset } from "@/lib/video-duration";
 
-export type StoryboardChunkMode = "auto" | "on" | "off";
+export type StoryboardChunkMode = "auto" | "on";
 
 export function parseStoryboardChunkMode(v: unknown): StoryboardChunkMode {
-  if (v === "on" || v === "off" || v === "auto") return v;
+  if (v === "on" || v === "auto") return v;
+  /** 历史清单曾存 off；移除 UI 选项后统一按自动策略处理 */
+  if (v === "off") return "auto";
   return "auto";
 }
 
@@ -17,6 +19,7 @@ export const DEFAULT_SINGLE_SHOT_MAX_TOKENS: Record<VideoDurationMin, number> =
     5: 22_000,
     8: 26_000,
     10: 32_000,
+    12: 38_400,
     15: 48_000,
   };
 
@@ -56,7 +59,6 @@ export function resolveUseChunkedStoryboard(args: {
   if (cfg.forceChunked) return true;
   if (cfg.disableChunked) return false;
   if (args.chunkMode === "on") return true;
-  if (args.chunkMode === "off") return false;
   return args.videoDurationMin >= cfg.chunkThresholdMinutes;
 }
 
@@ -115,16 +117,13 @@ export function formatStoryboardStrategyLabel(args: {
   return `分层生成 · ${args.phaseCount} 阶段（叙事骨架 + 整稿口播 + 分镜扩写 · ${d.labelShort}）`;
 }
 
-/** L3 扩写区间：off=单次扩写全长；auto/on 按档案阈值或多段切分 */
+/** L3 扩写区间：auto 按档案阈值决定是否切段；on 强制多段切分 */
 export function resolveStoryboardExpandRanges(args: {
   chunkMode: StoryboardChunkMode;
   videoDurationMin: VideoDurationMin;
   profile: LlmProfileRow;
   targetScenes: number;
 }): Array<{ start: number; end: number }> {
-  if (args.chunkMode === "off") {
-    return [{ start: 1, end: args.targetScenes }];
-  }
   const multi =
     args.chunkMode === "on" ||
     (args.chunkMode === "auto" &&

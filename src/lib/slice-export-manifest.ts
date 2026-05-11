@@ -33,7 +33,6 @@ export type SliceExportManifestV1 = {
   storyboardChunkMode: StoryboardChunkMode | string;
   tone: Tone;
   imageProfileId: string;
-  videoProfileId: string;
   llmProfile?: GenerationResult["llmProfile"];
   hook?: string;
   timeline?: GenerationResult["timeline"];
@@ -49,12 +48,12 @@ export type SliceExportManifestV1 = {
     index: number;
     imageFile: string | null;
     imageFileCandidates?: string[];
-    videoFile: string | null;
-    videoFileCandidates?: string[];
+    /** 该镜旁白 TTS 落盘路径（与静帧同 stem，扩展名为音频） */
+    audioFile: string | null;
+    audioFileCandidates?: string[];
     narration: string;
     visualDescription: string;
     durationSec: number;
-    approved?: boolean;
   }>;
   notes: string;
 };
@@ -62,13 +61,10 @@ export type SliceExportManifestV1 = {
 type AssetLike = {
   status?: string;
   url?: string;
-  videoStatus?: string;
-  videoUrl?: string;
-  approved?: boolean;
 };
 
 const DEFAULT_NOTES =
-  "本包用于外部图生视频试验：按 scenes 顺序结合 narration / visualDescription 配置运动与镜头；封面为独立竖屏外宣底图，可与镜 1 不同。静帧/视频同镜号采用固定 stem，重复保存为 stem-2、stem-3… 不覆盖；导出资源时默认使用磁盘最新版，勾选「强制重新拉取」可从当前 URL 再拉一版写入下一序号。";
+  "本包用于外部剪辑：按 scenes 顺序结合 narration / visualDescription；封面为独立竖屏外宣底图，可与镜 1 不同。静帧与逐镜 TTS 同镜号共用 stem（扩展名区分 png/jpg 与 mp3 等），重复保存为 stem-2、stem-3… 不覆盖；导出资源时静帧默认拉取远程 URL，音频仅扫描本地已落盘文件写入 manifest。";
 
 export function buildSliceExportBundlePayload(params: {
   projectSeed: string;
@@ -82,7 +78,6 @@ export function buildSliceExportBundlePayload(params: {
   storyboardChunkMode: StoryboardChunkMode | string;
   tone: Tone;
   imageProfileId: string;
-  videoProfileId: string;
   result: GenerationResult | null;
   coverStillUrl: string | null;
   assets: Record<number, AssetLike>;
@@ -90,11 +85,6 @@ export function buildSliceExportBundlePayload(params: {
   manifest: SliceExportManifestV1;
   exportFolder: string;
   downloads: SliceExportDownload[];
-  videoDownloads: Array<{
-    url: string;
-    fileStem: string;
-    sceneIndex: number;
-  }>;
 } {
   const folderTitle =
     params.sliceTitle.trim() ||
@@ -109,11 +99,6 @@ export function buildSliceExportBundlePayload(params: {
   const generatedAt = new Date().toISOString();
 
   const downloads: SliceExportDownload[] = [];
-  const videoDownloads: Array<{
-    url: string;
-    fileStem: string;
-    sceneIndex: number;
-  }> = [];
 
   if (params.coverStillUrl) {
     downloads.push({
@@ -128,10 +113,6 @@ export function buildSliceExportBundlePayload(params: {
       const row = params.assets[s.index];
       const url =
         row?.status === "success" && row.url ? row.url : undefined;
-      const vUrl =
-        row?.videoStatus === "success" && row.videoUrl ?
-          row.videoUrl
-        : undefined;
       if (url) {
         downloads.push({
           url,
@@ -140,24 +121,13 @@ export function buildSliceExportBundlePayload(params: {
           sceneIndex: s.index,
         });
       }
-      if (
-        vUrl &&
-        (vUrl.startsWith("http://") || vUrl.startsWith("https://"))
-      ) {
-        videoDownloads.push({
-          url: vUrl,
-          fileStem: `${seed}-scene-${String(s.index).padStart(2, "0")}-video`,
-          sceneIndex: s.index,
-        });
-      }
       return {
         index: s.index,
         imageFile: null,
-        videoFile: null,
+        audioFile: null,
         narration: s.narration,
         visualDescription: s.visualDescription,
         durationSec: s.durationSec,
-        approved: row?.approved,
       };
     }) ?? [];
 
@@ -177,7 +147,6 @@ export function buildSliceExportBundlePayload(params: {
     storyboardChunkMode: params.storyboardChunkMode,
     tone: params.tone,
     imageProfileId: params.imageProfileId.trim(),
-    videoProfileId: params.videoProfileId.trim(),
     llmProfile: params.result?.llmProfile,
     hook: params.result?.hook,
     timeline: params.result?.timeline,
@@ -191,5 +160,5 @@ export function buildSliceExportBundlePayload(params: {
     notes: DEFAULT_NOTES,
   };
 
-  return { manifest, exportFolder, downloads, videoDownloads };
+  return { manifest, exportFolder, downloads };
 }
