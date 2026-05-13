@@ -1,117 +1,128 @@
 /**
- * 代理上传参考图到 Remit.ee（https://img.remit.ee/#upload）
+ * 参考图 / 封面上传：仅火山引擎对象存储 TOS（@volcengine/tos-sdk）
  * POST /api/upload-reference-image
  * Body: { fileName: string, mimeType: string, fileSize: number, fileData: string(base64) }
+ *
+ * 环境变量见 `src/lib/tos-reference-upload.ts`
  */
 
+import {
+  appendLlmDebugLog,
+  buildImageGenerationPromptDebug,
+  createLlmRequestId,
+  llmRequestIdHeaders,
+} from "@/lib/llm-request-logger";
+import {
+  resolveTosReferenceUploadEnv,
+  uploadReferenceBufferViaTos,
+} from "@/lib/tos-reference-upload";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const REMIT_UPLOAD_URL = "https://img.remit.ee/api/upload";
-const REMIT_ORIGIN = "https://img.remit.ee";
 const MAX_BYTES = 20 * 1024 * 1024;
 
-function normalizePublicUrl(pathOrUrl: string): string {
-  if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
-    return pathOrUrl;
-  }
-  return pathOrUrl.startsWith("/")
-    ? `${REMIT_ORIGIN}${pathOrUrl}`
-    : `${REMIT_ORIGIN}/${pathOrUrl}`;
-}
-
 export async function POST(req: NextRequest) {
+  const requestId = createLlmRequestId();
+  const jsonHeaders = llmRequestIdHeaders(requestId);
+
+  async function fail(
+    status: number,
+    publicError: string,
+    meta: Record<string, unknown>,
+    uploadHint: string,
+  ) {
+    await appendLlmDebugLog({
+      requestId,
+      route: "POST /api/upload-reference-image",
+      meta: { ...meta, publicError },
+      promptDebug: buildImageGenerationPromptDebug({
+        error: publicError,
+        promptSummary: uploadHint.slice(0, 500),
+      }),
+    });
+    return NextResponse.json(
+      { error: publicError },
+      { status, headers: jsonHeaders },
+    );
+  }
+
   try {
     const body = await req.json();
     const { fileName, mimeType, fileSize, fileData } = body;
+    const uploadHint = `${String(fileName ?? "")} · ${String(mimeType ?? "")} · ${String(fileSize ?? "")}b`;
 
     if (!fileName || !mimeType || !fileSize || !fileData) {
-      return NextResponse.json(
-        { error: "缺少必要参数: fileName, mimeType, fileSize, fileData" },
-        { status: 400 },
+      return await fail(
+        400,
+        "缺少必要参数: fileName, mimeType, fileSize, fileData",
+        { phase: "validation" },
+        uploadHint,
       );
     }
 
     if (typeof fileSize !== "number" || fileSize > MAX_BYTES) {
-      return NextResponse.json(
-        { error: `参考图单文件不超过 ${MAX_BYTES / (1024 * 1024)}MB` },
-        { status: 400 },
+      return await fail(
+        400,
+        `参考图单文件不超过 ${MAX_BYTES / (1024 * 1024)}MB`,
+        { phase: "validation", fileSize },
+        uploadHint,
       );
     }
 
     const buffer = Buffer.from(fileData, "base64");
     if (buffer.length > MAX_BYTES) {
-      return NextResponse.json(
-        { error: `参考图单文件不超过 ${MAX_BYTES / (1024 * 1024)}MB` },
-        { status: 400 },
+      return await fail(
+        400,
+        `参考图单文件不超过 ${MAX_BYTES / (1024 * 1024)}MB`,
+        { phase: "validation", decodedBytes: buffer.length },
+        uploadHint,
       );
     }
 
-    const attempts = 4;
-    let lastMessage = "上传到图床失败";
-
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      const formData = new FormData();
-      formData.append(
-        "file",
-        new Blob([buffer], { type: mimeType }),
-        fileName,
+    if (!resolveTosReferenceUploadEnv()) {
+      return await fail(
+        503,
+        "未配置火山引擎对象存储 TOS：请在环境变量中配置 VOLCENGINE_TOS_ACCESS_KEY_ID、VOLCENGINE_TOS_SECRET_ACCESS_KEY、VOLCENGINE_TOS_REGION、VOLCENGINE_TOS_BUCKET（可选 VOLCENGINE_TOS_ENDPOINT、VOLCENGINE_TOS_PUBLIC_BASE_URL、VOLCENGINE_TOS_KEY_PREFIX）。说明见 src/lib/tos-reference-upload.ts。",
+        { phase: "tos_not_configured" },
+        uploadHint,
       );
+    }
 
-      const upstream = await fetch(REMIT_UPLOAD_URL, {
-        method: "POST",
-        body: formData,
-        headers: {
-          Origin: REMIT_ORIGIN,
-          Referer: `${REMIT_ORIGIN}/`,
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        },
+    try {
+      const { url } = await uploadReferenceBufferViaTos({
+        buffer,
+        mimeType: String(mimeType),
+        fileName: String(fileName),
       });
-
-      const raw = await upstream.text();
-      let data: { success?: boolean; url?: string; message?: string; error?: string };
-      try {
-        data = JSON.parse(raw) as typeof data;
-      } catch {
-        lastMessage = upstream.ok ? raw.slice(0, 200) : `HTTP ${upstream.status}`;
-        if (upstream.status === 503 && attempt < attempts) {
-          await new Promise((r) => setTimeout(r, 1500 * attempt));
-          continue;
-        }
-        return NextResponse.json({ error: lastMessage }, { status: 502 });
-      }
-
-      if (upstream.ok && data.success && data.url) {
-        const url = normalizePublicUrl(data.url);
-        return NextResponse.json({ success: true, url });
-      }
-
-      lastMessage =
-        data.message ||
-        data.error ||
-        (upstream.status === 403
-          ? "图床拒绝请求（可能禁止非网页端调用），请稍后在网页上传：https://img.remit.ee/#upload"
-          : `HTTP ${upstream.status}`);
-
-      if (upstream.status === 503 && attempt < attempts) {
-        await new Promise((r) => setTimeout(r, 1500 * attempt));
-        continue;
-      }
-
       return NextResponse.json(
-        { error: lastMessage },
-        { status: upstream.status >= 400 ? upstream.status : 502 },
+        { success: true, url },
+        { headers: jsonHeaders },
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return await fail(
+        502,
+        `TOS 上传失败：${msg}`,
+        { phase: "tos_upload" },
+        uploadHint,
       );
     }
-
-    return NextResponse.json({ error: lastMessage }, { status: 502 });
   } catch (error) {
+    const msg = error instanceof Error ? error.message : "上传失败";
+    await appendLlmDebugLog({
+      requestId,
+      route: "POST /api/upload-reference-image",
+      meta: { phase: "handler_exception", publicError: msg },
+      promptDebug: buildImageGenerationPromptDebug({
+        error: msg,
+        promptSummary: "—",
+      }),
+    });
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "上传失败" },
-      { status: 500 },
+      { error: msg },
+      { status: 500, headers: jsonHeaders },
     );
   }
 }

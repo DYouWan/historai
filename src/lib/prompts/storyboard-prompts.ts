@@ -10,6 +10,7 @@ import type {
 } from "@/lib/types";
 import {
   getVideoDurationPreset,
+  TIMELINE_SEGMENTS_HARD_MAX,
   type VideoDurationPreset,
 } from "@/lib/video-duration";
 
@@ -127,7 +128,7 @@ function buildStoryboardPromptParts(params: StoryboardPromptParams): {
 - **分镜节奏（硬约束）**：不得在 timeline 写得极细却只给很少的镜。**总镜数须 ${d.minScenes}～${d.maxScenes}**，**不得少于 ${d.minScenes}** 镜。**从第 2 镜起到倒数第 3 镜**为展开区，其中须安排**至少连续 ${d.midStreakMin} 镜**递进矛盾、史实细节或反差，不得以一两镜带过核心过程。**收尾至少 2 镜**：倒数第二镜须把切口「落槌」；最后一镜余韵或留白。**总时长**：所有 \`scenes[].durationSec\` **相加须在 ${d.minTotalSec}～${d.maxTotalSec}**；单镜时长首选 **${d.perScenePreferredLabel} 秒**，极短独白才可 **${d.perSceneMinSec} 秒**，**避免**大量使用 **${d.shortSceneWarnBelow} 秒**糊弄；若加总明显低于 **${d.softMinTotalSec} 秒**，视为不达标须重新分配镜数与时长。
 
 要求：
-1. timeline 共 **${d.timelineMin}～${d.timelineMax}** 段；每段给出至少 1 条 sources（书名/章节/学者观点均可，勿编造页码）。整体覆盖：**前置窗口内或与 hook 接续的极简 stakes** → **向唯一高峰递进** → **顶峰爆发或认知瞬时反转** → **落槌回顾与余韵**，且 **其中必须有一段** timeline 对应上文「高峰 label」硬性要求。
+1. timeline **至少 ${d.timelineMin}** 段、**至多 ${TIMELINE_SEGMENTS_HARD_MAX}** 段（**建议**约 ${d.timelineMax} 段以内以保持紧凑，可多写以补充节点）；每段给出至少 1 条 sources（书名/章节/学者观点均可，勿编造页码）。整体覆盖：**前置窗口内或与 hook 接续的极简 stakes** → **向唯一高峰递进** → **顶峰爆发或认知瞬时反转** → **落槌回顾与余韵**，且 **其中必须有一段** timeline 对应上文「高峰 label」硬性要求。
 2. scenes 与 timeline **同弧对齐**：每一段 timeline 的实质信息（人物动作、文献一句、反差落点等）须在对应镜群的口播中有展开或呼应，避免「timeline 已写透、口播像旁白提要」。总镜数 **${d.minScenes}～${d.maxScenes}**（须满足上文「中段连续递进镜数、末尾至少 2 镜」）；每镜 durationSec **以 ${d.perSceneCenterSec} 秒为居中参考**，按口播字数在 **${d.perSceneRangeLabel}** 间微调；**全片 durationSec 之和须在 ${d.minTotalSec}～${d.maxTotalSec}**；每镜 visualDescription 里重复画风关键词；**每镜 visualDescription 与本镜 narration 须声画一致**（口播中的可见场景、人物关系、关键器物、昼夜与氛围须在画面描述中有对应，禁止明显相悖）；镜序只服务同一切面。**visualDescription** 还须遵守上文「镜头丰富度」：勿全线镜头仅有主角单人特写。
 3. **每镜 narration（硬约束）**：在已定人称前提下（个人主角用「我」，群体主角用「他们」），使用可读口播句式（陈述句为主）；单镜允许 1～2 句，**并尽量让下一镜首句自然承接上一镜**。**按约 3～4 汉字/秒的口播语速**核对：narration 与 \`durationSec\` 匹配。**悬念、隐喻仅作点缀**；**至少半数分镜**除修辞外还须带**实体信息**（时间、数字、具体动作、地名/身份、直接后果择一）。数字与易夸大处须有依据或「史载」「一说」限定（与 factNotes 一致）。
 4. factNotes 列出最值得发布前复核的结论（最多 5 条）。
@@ -163,7 +164,7 @@ export function buildVoiceoverContextPrefix(
 ): string {
   const { toneText, lead } = buildThemeSliceDurationSubjectLines(params);
   return `${lead}
-**人称（硬约束）**：主角为「${params.subject}」。**若为具体个人**：整稿口播（**voiceoverFullText** 与各段 **paragraphs**）必须以第一人称「我」自述，用「我记得」「当日我」「史书里写我那件事……」等与史料衔接；**禁止**用「他/她」或直呼全名作主语描写自身言行。**若为并称群体、阵营或集体对象**：全流程以「**他们**」指称该群体作主语（**不要用「我们」**）；**禁止**用单数「他」指代整个群体。引他人评价、摘史书时可短暂出现专名。
+**人称（硬约束）**：主角为「${params.subject}」。**若为具体个人**：整稿口播各段（**paragraphs** 按镜序）必须以第一人称「我」自述，用「我记得」「当日我」「史书里写我那件事……」等与史料衔接；**禁止**用「他/她」或直呼全名作主语描写自身言行。**若为并称群体、阵营或集体对象**：全流程以「**他们**」指称该群体作主语（**不要用「我们」**）；**禁止**用单数「他」指代整个群体。引他人评价、摘史书时可短暂出现专名。
 
 统一画风关键词（后续分镜写入各镜 visualDescription 前缀）：${params.stylePreset}
 
@@ -190,7 +191,7 @@ export function buildVoiceoverProductAndRequirementsOnly(
 - 叙事必须是**故事体**：冲突 → 挣扎或反差 → 反转或落点 → 收束（可选：一句留互动/留白的口播，但不要编造虚假互动数据）。
 - **叙事推进**：全部 **${targetSceneCount}** 段顺序须体现 stakes→递进→唯一高峰→落槌余韵，与下列骨架 **beat** 顺序一致；**不是**人物生平年表。
 
-- **口播主干**：**voiceoverFullText** 为唯一顺读主干；镜与镜之间仅用**两个换行**分段，全文切分后恰好 **${targetSceneCount}** 段；**paragraphs** 必须与上述切分**逐字一致**。**第 i 段**须落实 **index=i** 的 beat 与 **durationSec**。
+- **口播主干**：输出 **paragraphs** 字符串数组，恰好 **${targetSceneCount}** 条，**第 i 条**对应 **index=i** 的镜，须落实该镜 beat 与 **durationSec**；顺读时自上而下连成一条故事线（条与条之间须有因果或时间承接，可轻用衔接词）。
 
 - **连贯与收束**：各段自上而下顺读成一条连续故事线；段间须有因果或时间承接（可轻用「接着」「就在那时」「同一天夜里」等）。**中段**以行动—反应—局势变化为主；**禁止**从大约第 **${d.metaphorFromSceneApprox}** 段起到结尾**连续超过 2 段**只有隐喻/警句而没有新的事实或动作信息。
 
@@ -288,7 +289,7 @@ export function buildSpineUserPrompt(
 1. **sceneSkeleton 必须恰好 ${targetSceneCount} 条**；index 须为 1～${targetSceneCount} 连续整数，不得缺号或重复。
 2. 每条 **durationSec** 须在 **${d.perSceneMinSec}～${d.perSceneMaxSec}**；全片 durationSec 之和须落在 **${d.minTotalSec}～${d.maxTotalSec}**（若略有偏差，后续扩写阶段会微调单镜时长，此处尽量接近）。
 3. **beat** 为扩写蓝图：须让读者能预见口播将包含的**实体信息**（时间、地点、数字、动作等择一），并可标注本镜画面侧重（主角反应 / 对立面压力 / 部属群像 / 环境局势之一），勿写空泛形容词堆砌；**不要**在此阶段写完整口播长句。
-4. timeline 共 **${d.timelineMin}～${d.timelineMax}** 段，每段至少 1 条 sources；**其中一段 label 必须含高峰关键词**（与 System「唯一高峰」一致）。
+4. timeline **至少 ${d.timelineMin}** 段、**至多 ${TIMELINE_SEGMENTS_HARD_MAX}** 段（**建议**约 ${d.timelineMax} 段以内），每段至少 1 条 sources；**其中一段 label 必须含高峰关键词**（与 System「唯一高峰」一致）。
 5. **禁止输出** scenes、visualDescription、narration。
 
 请开始：输出 JSON，sceneSkeleton 恰好 **${targetSceneCount}** 条。`;
@@ -301,12 +302,11 @@ export function buildVoiceoverSystemPrompt(
   targetSceneCount: number,
 ): string {
   const d = getVideoDurationPreset(videoDurationMin);
-  return `你是 HistorAI 的**整稿口播撰稿**助手：在已定叙事骨架（sceneSkeleton 镜数与 beats）之上，写出**成片可顺读的唯一口播主干**。你只输出合法 JSON，中文。**不写** visualDescription；**不写** scenes。
+  return `你是 HistorAI 的**整稿口播撰稿**助手：在已定叙事骨架（sceneSkeleton 镜数与 beats）之上，写出**成片可顺读的唯一口播主干**（以按镜分条的段落数组交付）。你只输出合法 JSON，中文。**不写** visualDescription；**不写** scenes。
 
-【长稿优先】
-- 先以 **voiceoverFullText** 写成**一篇连贯口播长稿**：现代汉语白话，像真人从头到尾讲圆一条故事弧；段与段之间有因果与时间承接（可适当用「接着」「就在那时」「后来」「到那天」等轻衔接），**禁止**写成几十句互不粘连的 caption 拼盘。
-- **仅在镜与镜之间**插入**两个换行**（\\n\\n）分段：全文因此恰好被切成 **${targetSceneCount}** 段；**段内**一般为 **1～3 句**，合并相关动作与信息，**禁止**为凑镜数把「走一步、喘一声」拆成大量极短段。
-- **paragraphs** 数组必须与 **voiceoverFullText** 按双换行切分后的 **${targetSceneCount} 段逐字一致**（复制粘贴核对后再提交 JSON）。
+【段落数组】
+- 只输出 **paragraphs**：恰好 **${targetSceneCount}** 个字符串，**顺序即镜序**（第 i 条对应 index=i）。现代汉语白话，合读须像真人从头到尾讲圆一条故事弧；相邻条之间须有因果或时间承接（可适当用「接着」「就在那时」「后来」「到那天」等轻衔接），**禁止**写成互不粘连的 caption 拼盘。
+- **每条**一般为 **1～3 句**，合并相关动作与信息，**禁止**为凑镜数把「走一步、喘一声」拆成大量极短条。
 
 【其余硬约束】
 - 第 i 段对应 index=i 的镜，须落实该镜 skeleton 的 beat 与 durationSec；约 **3～4 汉字/秒** 核对字数与口播时长。
@@ -333,7 +333,7 @@ ${product}
 **已定叙事骨架（镜数与节拍，不可增删镜）**
 ${skeletonTable}
 
-请只输出合法 JSON（不要 Markdown，不要代码围栏）：根对象仅含 **voiceoverFullText**（字符串）与 **paragraphs**（字符串数组）。全文仅用**两个换行**分段，切分后恰好 **${targetSceneCount}** 段；**paragraphs** 必须与分段结果**逐字一致**（见 System【长稿优先】）。`;
+请只输出合法 JSON（不要 Markdown，不要代码围栏）：根对象**仅含** **paragraphs**（字符串数组），恰好 **${targetSceneCount}** 条，按镜序。`;
 }
 
 export function buildChunkSystemPrompt(): string {
@@ -422,7 +422,7 @@ export function appendStoryboardVoiceoverRetryInstruction(
   parseErrorMessage: string,
   targetSceneCount: number,
 ): string {
-  return `${user}\n\n【自动重试】${parseErrorMessage}\n请只输出合法 JSON：含连贯长稿 **voiceoverFullText**（镜间仅用双换行，切分后恰好 ${targetSceneCount} 段），**paragraphs** 与该切分逐字一致。`;
+  return `${user}\n\n【自动重试】${parseErrorMessage}\n请只输出合法 JSON：根对象仅含 **paragraphs** 数组，恰好 ${targetSceneCount} 条字符串（按镜序）。`;
 }
 
 /** 分块 JSON 解析失败时追加到 user，触发自动重试 */

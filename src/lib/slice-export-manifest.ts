@@ -38,6 +38,8 @@ export type SliceExportManifestV1 = {
   timeline?: GenerationResult["timeline"];
   factNotes?: string[];
   complianceNote?: string;
+  /** 整稿口播全文（与 scenes[].narration 分段对应前的总稿；导出时含界面改稿） */
+  voiceoverFullText?: string;
   cover?: {
     imageFile: string | null;
     /** 同 stem 规则下所有已落盘版本（升序），便于人工挑选 */
@@ -48,7 +50,7 @@ export type SliceExportManifestV1 = {
     index: number;
     imageFile: string | null;
     imageFileCandidates?: string[];
-    /** 该镜旁白 TTS 落盘路径（与静帧同 stem，扩展名为音频） */
+    /** 该镜旁白 TTS 落盘路径（stem 为 …-scene-audio-镜号，扩展名为音频） */
     audioFile: string | null;
     audioFileCandidates?: string[];
     narration: string;
@@ -64,7 +66,7 @@ type AssetLike = {
 };
 
 const DEFAULT_NOTES =
-  "本包用于外部剪辑：按 scenes 顺序结合 narration / visualDescription；封面为独立竖屏外宣底图，可与镜 1 不同。静帧与逐镜 TTS 同镜号共用 stem（扩展名区分 png/jpg 与 mp3 等），重复保存为 stem-2、stem-3… 不覆盖；导出资源时静帧默认拉取远程 URL，音频仅扫描本地已落盘文件写入 manifest。";
+  "本包用于外部剪辑：按 scenes 顺序结合 narration / visualDescription；manifest.voiceoverFullText 为整稿口播全文（若有）。封面为独立竖屏外宣底图，可与镜 1 不同。静帧落盘 stem 形如 {projectSeed}-scene-img-镜号，逐镜口播 TTS 为 {projectSeed}-scene-audio-镜号；重复保存为 stem-2、stem-3… 不覆盖；导出资源时静帧默认拉取远程 URL，音频仅扫描本地已落盘文件写入 manifest。";
 
 export function buildSliceExportBundlePayload(params: {
   projectSeed: string;
@@ -81,6 +83,8 @@ export function buildSliceExportBundlePayload(params: {
   result: GenerationResult | null;
   coverStillUrl: string | null;
   assets: Record<number, AssetLike>;
+  /** 整稿口播全文；优先于 result（如导出前在 UI 中改过稿） */
+  voiceoverFullText?: string | null;
 }): {
   manifest: SliceExportManifestV1;
   exportFolder: string;
@@ -116,7 +120,7 @@ export function buildSliceExportBundlePayload(params: {
       if (url) {
         downloads.push({
           url,
-          fileStem: `${seed}-scene-${String(s.index).padStart(2, "0")}`,
+          fileStem: `${seed}-scene-img-${String(s.index).padStart(2, "0")}`,
           kind: "scene",
           sceneIndex: s.index,
         });
@@ -130,6 +134,11 @@ export function buildSliceExportBundlePayload(params: {
         durationSec: s.durationSec,
       };
     }) ?? [];
+
+  const voiceoverMerged =
+    params.voiceoverFullText?.trim() ||
+    params.result?.voiceoverFullText?.trim() ||
+    "";
 
   const manifest: SliceExportManifestV1 = {
     exportVersion: SLICE_EXPORT_VERSION,
@@ -152,6 +161,7 @@ export function buildSliceExportBundlePayload(params: {
     timeline: params.result?.timeline,
     factNotes: params.result?.factNotes,
     complianceNote: params.result?.complianceNote,
+    ...(voiceoverMerged ? { voiceoverFullText: voiceoverMerged } : {}),
     cover:
       params.coverStillUrl ?
         { imageFile: null, standaloneCover: true }

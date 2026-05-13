@@ -22,7 +22,7 @@ export function anchorSubjectLabelForImage(subject?: string | null): string {
   return IMAGE_SUBJECT_FALLBACK_ANCHOR;
 }
 
-/** 封面：竖屏外宣底图；纯画面无内嵌字（供后期叠字） */
+/** 封面：竖屏外宣底图；纯画面无内嵌字；版式为人物居左、右侧留白（供后期叠字） */
 export function buildCoverBaseOnlyPromptSnippet(opts: {
   subject?: string | null;
   seriesTitle?: string | null;
@@ -42,6 +42,16 @@ export function buildCoverBaseOnlyPromptSnippet(opts: {
 
   lines.push(
     `【封面底图｜竖屏外宣】唯一视觉中心「${protagonist}」。电影感单帧，忌泛古代肖像或与命题无关的场面。`,
+  );
+
+  lines.push(
+    [
+      "【版式｜人物居左】竖幅信息流列表首帧。",
+      "**主角整个人物在画幅中的横向占位（从头到脚，或胸像至可见下身）不超过宽度约 40%**；人物与关键道具整体靠左，脸与视线可略朝右；忌人物过大或居中顶天立地。",
+      "**右侧余下为负形留白、信息密度须极低**：宜极浅纯色、极淡渐变或极轻阴影肌理；避免明显布褶、大团云雾、可辨几何块或抢眼景物；该区域内不要人脸、手部特写或其它主体。",
+      "**留白区内严禁任何可读文字、Logo、符号、装饰性伪字或图形徽记**（模型勿用假字填充空区）。",
+      "**留白区靠画面上方约 20% 高度内须格外干净**，以便后期列表 UI、头像或标题条叠盖。",
+    ].join(""),
   );
 
   if (angleClip) {
@@ -71,7 +81,7 @@ export function buildCoverBaseOnlyPromptSnippet(opts: {
   }
 
   lines.push(
-    `【禁止内嵌字】不得出现可读汉字、字母、数字贴片、水印、logo、匾额对联等；不留空白字框；可留天空/幔帐/单色墙等柔留白供后期叠字。构图适配竖屏首帧裁剪。`,
+    "【禁止内嵌字】全画面不得出现可读汉字、字母、数字贴片、水印、logo、匾额对联等；不留空白字框。构图适配竖屏首帧裁剪。",
   );
 
   return lines.join("\n");

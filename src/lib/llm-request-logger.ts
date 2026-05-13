@@ -26,6 +26,15 @@ function localDateYmd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** 本地时区时间戳，用于 `.llm-read.md` 二级标题（避免 `toISOString()` 的 UTC） */
+function localLogTimestamp(d: Date): string {
+  const z = (n: number, w = 2) => String(n).padStart(w, "0");
+  return (
+    `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ` +
+    `${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}.${z(d.getMilliseconds(), 3)}`
+  );
+}
+
 function resolveLogDir(): string {
   const override = process.env.HISTORAI_LLM_LOG_DIR?.trim();
   if (override) return path.resolve(override);
@@ -84,7 +93,7 @@ function sectionPhase(
   return out;
 }
 
-/** 人类可读 Markdown（按日追加 `YYYY-MM-DD.llm-read.md`） */
+/** 人类可读 Markdown（按日追加 `YYYY-MM-DD.llm-read.md`；文首 `##` 时间为运行环境本地时区） */
 function buildMarkdownBlock(args: {
   ts: string;
   requestId: string;
@@ -189,7 +198,7 @@ export function buildImageGenerationPromptDebug(args: {
 }
 
 /**
- * 将 LLM 调试明细追加到按日 `YYYY-MM-DD.llm-read.md`。
+ * 将 LLM 调试明细追加到按日 `YYYY-MM-DD.llm-read.md`（每条 `##` 下时间为**服务器本地时区**，与文件名日期一致）。
  * **requestId**：请在 API handler 入口 `createLlmRequestId()` 一次，同一 HTTP 请求内多次 `appendLlmDebugLog` 传同一值；不传则每次追加单独生成（一般不推荐）。
  * 设置 HISTORAI_LLM_LOG=0 可关闭。写入失败只打 console，不抛错。
  */
@@ -206,7 +215,7 @@ export async function appendLlmDebugLog(entry: {
   try {
     const requestId = entry.requestId ?? randomUUID();
     const meta = { ...(entry.meta ?? {}), requestId };
-    const ts = new Date().toISOString();
+    const ts = localLogTimestamp(new Date());
     await appendMarkdownLog(
       buildMarkdownBlock({
         ts,

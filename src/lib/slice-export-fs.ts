@@ -1,6 +1,82 @@
 import { mkdir, readdir, unlink, writeFile } from "fs/promises";
 import path from "path";
 
+const SLICE_REMOTE_FETCH_UA = "HistorAI/1.0 (save-slice-image)";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** 展开 Node/undici `fetch failed` 的 cause 链，便于排查 TLS / DNS / 超时 */
+function formatRemoteFetchError(err: Error): string {
+  const segments: string[] = [];
+  const codes = new Set<string>();
+  let cur: unknown = err;
+  let depth = 0;
+  while (cur instanceof Error && depth < 6) {
+    segments.push(cur.message);
+    const code = (cur as NodeJS.ErrnoException).code;
+    if (typeof code === "string" && code) codes.add(code);
+    cur = (cur as { cause?: unknown }).cause;
+    depth++;
+  }
+  const joined = segments.join(" · ");
+  const codeStr = codes.size ? ` [${[...codes].join(", ")}]` : "";
+  const hint =
+    /certificate|TLS|SSL|UNABLE_TO_VERIFY/i.test(joined) ?
+      " 提示：多为 TLS/证书校验问题，可检查本机代理或系统时间。"
+    : /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(joined) ?
+      " 提示：DNS 解析失败，请检查网络或 DNS。"
+    : /ECONNRESET|ETIMEDOUT|UND_ERR_CONNECT|aborted|timeout/i.test(joined) ?
+      " 提示：连接被重置或超时；海外访问国内 CDN 可能不稳定，可稍后重试或使用代理。"
+    : "";
+  return (joined || err.message) + codeStr + hint;
+}
+
+/**
+ * 从公网 URL 拉取图片二进制；带 UA 与有限次重试（缓解 CDN 偶发断连、仅返回 fetch failed 等）。
+ */
+async function fetchRemoteImageBytes(url: string): Promise<{
+  buffer: Buffer;
+  contentType: string | null;
+}> {
+  const headers = {
+    "User-Agent": SLICE_REMOTE_FETCH_UA,
+    Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+  } as const;
+
+  const attempts = 3;
+  const perAttemptMs = 60_000;
+  let lastError: Error | undefined;
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, {
+        headers,
+        cache: "no-store",
+        signal: AbortSignal.timeout(perAttemptMs),
+      });
+      if (!res.ok) {
+        const retryable = res.status >= 500 && res.status < 600;
+        if (retryable && i < attempts - 1) {
+          await sleep(300 * (i + 1));
+          continue;
+        }
+        throw new Error(`拉取失败：HTTP ${res.status}`);
+      }
+      const buffer = Buffer.from(await res.arrayBuffer());
+      return { buffer, contentType: res.headers.get("content-type") };
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (i < attempts - 1) {
+        await sleep(400 * (i + 1));
+      }
+    }
+  }
+
+  throw new Error(formatRemoteFetchError(lastError ?? new Error("拉取失败")));
+}
+
 export const SLICE_EXPORT_ROOT = "slice-exports";
 
 const IMG_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
@@ -105,7 +181,7 @@ export async function findLatestVersionedExportFile(
 }
 
 /**
- * 与同 stem 规则的音频版本（mp3/wav/m4a/aac），与静帧 stem 一致、扩展名区分类型。
+ * 与同 stem 规则的音频版本（mp3/wav/m4a/aac）；逐镜口播 stem 为 `…-scene-audio-NN`，与静帧 `…-scene-img-NN` 区分。
  */
 export async function listVersionedAudioExportFiles(
   cwd: string,
@@ -178,16 +254,12 @@ export async function saveRemoteFileToSliceExports(params: {
     throw new Error("仅支持 http(s) 地址");
   }
 
-  const res = await fetch(url, { signal: AbortSignal.timeout(300_000) });
-  if (!res.ok) {
-    throw new Error(`拉取失败：HTTP ${res.status}`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
+  const { buffer: buf, contentType } = await fetchRemoteImageBytes(url);
   if (buf.length < 32) {
     throw new Error("文件数据异常");
   }
 
-  const ext = extFromImageResponse(res.headers.get("content-type"), url);
+  const ext = extFromImageResponse(contentType, url);
 
   const safeStem = sanitizeExportSegment(baseName, 96);
   const dir = path.join(cwd, SLICE_EXPORT_ROOT, folderName);

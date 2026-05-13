@@ -80,6 +80,7 @@ export async function POST(req: Request) {
       stopAfterVoiceover: body.stopAfterVoiceover === true,
       stopAfterSpine: body.stopAfterSpine === true,
       generateVoiceoverOnly: body.generateVoiceoverOnly === true,
+      llmRequestId: requestId,
     });
 
     await appendLlmDebugLog({

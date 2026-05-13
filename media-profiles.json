@@ -41,7 +41,7 @@
       "apiKeyEnv": "ARK_API_KEY",
       "driver": "volcengine_seedream",
       "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
-      "model": "doubao-seedream-5-0-260128",
+      "model": "doubao-seedream-4-5-251128",
       "size": "1440x2560",
       "responseFormat": "url",
       "watermark": false

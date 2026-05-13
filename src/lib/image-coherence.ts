@@ -41,7 +41,7 @@ export type ImageCoherencePlan = {
 };
 
 /**
- * - **standaloneCover**：仅外宣封面底图（切片意象），与正片镜 1 脱钩。
+ * - **standaloneCover**：仅外宣封面底图（切片意象），与正片镜 1 脱钩；提示词含人物居左、右侧留白供后期叠字。
  * - **sceneIndex === 1 且非独立封面**：正片首镜，用分镜 visual + 口播，不含切片封面大块。
  * - **sceneIndex > 1**：图生图或文生跟镜。
  */

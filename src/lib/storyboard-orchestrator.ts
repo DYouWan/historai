@@ -1,5 +1,6 @@
 import { callOpenAICompatibleChat } from "@/lib/chat-openai-compatible";
 import type { LlmProfileRow } from "@/lib/llm-profiles";
+import { appendLlmDebugLog } from "@/lib/llm-request-logger";
 import {
   appendStoryboardChunkRetryInstruction,
   appendStoryboardVoiceoverRetryInstruction,
@@ -35,6 +36,7 @@ import type {
 import {
   getVideoDurationPreset,
   targetSceneCountForPreset,
+  TIMELINE_SEGMENTS_HARD_MAX,
 } from "@/lib/video-duration";
 import { normalizeVoiceoverPayload } from "@/lib/voiceover-normalize";
 
@@ -59,6 +61,19 @@ function parseJsonStrict(content: string): unknown {
     return JSON.parse(content) as unknown;
   } catch {
     throw new Error("模型输出不是合法 JSON，请重试");
+  }
+}
+
+function tryJsonParse(content: string):
+  | { ok: true; value: unknown }
+  | { ok: false; message: string } {
+  try {
+    return { ok: true, value: JSON.parse(content) as unknown };
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 
@@ -129,9 +144,14 @@ function parseAndValidateSpine(args: {
   }
 
   const tl = timelineFromSpine(o);
-  if (tl.length < args.dur.timelineMin || tl.length > args.dur.timelineMax) {
+  if (tl.length < args.dur.timelineMin) {
     throw new Error(
-      `叙事骨架阶段：timeline 段数为 ${tl.length}，须在 ${args.dur.timelineMin}～${args.dur.timelineMax} 之间。`,
+      `叙事骨架阶段：timeline 段数为 ${tl.length}，须至少 ${args.dur.timelineMin} 段。`,
+    );
+  }
+  if (tl.length > TIMELINE_SEGMENTS_HARD_MAX) {
+    throw new Error(
+      `叙事骨架阶段：timeline 段数为 ${tl.length}，不得超过 ${TIMELINE_SEGMENTS_HARD_MAX} 段。`,
     );
   }
   for (const row of tl) {
@@ -519,6 +539,8 @@ export async function generateStoryboardWithProfile(args: {
   stopAfterSpine?: boolean;
   /** 仅 L2（须带 spineSnapshot） */
   generateVoiceoverOnly?: boolean;
+  /** 与 API 响应头 `x-request-id` 一致，失败时写入 `.llm-read.md` 便于对照 */
+  llmRequestId?: string;
 }): Promise<{ result: GenerationResult; promptDebug: LlmMessagesDebug }> {
   const {
     profile,
@@ -531,6 +553,7 @@ export async function generateStoryboardWithProfile(args: {
     stopAfterVoiceover,
     stopAfterSpine,
     generateVoiceoverOnly,
+    llmRequestId,
   } = args;
   const { profileId: _profileId, ...promptOnly } = args.params;
   void _profileId;
@@ -661,7 +684,51 @@ export async function generateStoryboardWithProfile(args: {
       usesJson,
     });
 
-    let spineParsed: unknown = parseJsonStrict(spineAssistant);
+    const spineL1LogMeta = (extra: Record<string, unknown>) => ({
+      subject: fullParams.subject,
+      videoDurationMin,
+      targetScenes,
+      stopAfterSpine: stopAfterSpineOnly,
+      ...extra,
+    });
+
+    const logSpineL1Failure = async (entry: {
+      user: string;
+      assistantRaw: string;
+      storyboardStrategy: string;
+      meta: Record<string, unknown>;
+    }) => {
+      await appendLlmDebugLog({
+        requestId: llmRequestId,
+        route: "POST /api/generate",
+        promptDebug: {
+          system: spineSystem,
+          user: entry.user,
+          model: profile.model,
+          chatCompletionsUrl: profile.chatCompletionsUrl.trim(),
+          temperature: 0.6,
+          usesJsonResponseFormat: usesJson,
+          assistantRaw: entry.assistantRaw,
+          storyboardStrategy: entry.storyboardStrategy,
+        },
+        meta: spineL1LogMeta(entry.meta),
+      });
+    };
+
+    const j1 = tryJsonParse(spineAssistant);
+    if (!j1.ok) {
+      await logSpineL1Failure({
+        user: spineUser,
+        assistantRaw: spineAssistant,
+        storyboardStrategy: "narrative_skeleton · L1 · JSON.parse failed (首轮)",
+        meta: {
+          spineFailureStage: "json_parse",
+          jsonParseError: j1.message,
+        },
+      });
+      throw new Error("模型输出不是合法 JSON，请重试");
+    }
+    let spineParsed: unknown = j1.value;
     let validated: ReturnType<typeof parseAndValidateSpine>;
     try {
       validated = parseAndValidateSpine({
@@ -670,8 +737,9 @@ export async function generateStoryboardWithProfile(args: {
         dur,
       });
     } catch (e1) {
-      const msg = e1 instanceof Error ? e1.message : String(e1);
-      spineUser = `${spineUser}\n\n【自动重试】上次校验失败：${msg}\n请严格输出合法 JSON：sceneSkeleton 恰好 ${targetScenes} 条，index 1～${targetScenes}，timeline 段数在 ${dur.timelineMin}～${dur.timelineMax}。`;
+      const msgFirst = e1 instanceof Error ? e1.message : String(e1);
+      const assistantRound1 = spineAssistant;
+      spineUser = `${spineUser}\n\n【自动重试】上次校验失败：${msgFirst}\n请严格输出合法 JSON：sceneSkeleton 恰好 ${targetScenes} 条，index 1～${targetScenes}；timeline 至少 ${dur.timelineMin} 段、至多 ${TIMELINE_SEGMENTS_HARD_MAX} 段。`;
       spineAssistant = await callChat({
         profile,
         apiKey,
@@ -680,12 +748,46 @@ export async function generateStoryboardWithProfile(args: {
         maxTokens: spineMax,
         usesJson,
       });
-      spineParsed = parseJsonStrict(spineAssistant);
-      validated = parseAndValidateSpine({
-        parsed: spineParsed,
-        expectedSkeletonCount: targetScenes,
-        dur,
-      });
+      const j2 = tryJsonParse(spineAssistant);
+      if (!j2.ok) {
+        await logSpineL1Failure({
+          user: spineUser,
+          assistantRaw:
+            `【首轮 assistant（JSON 合法但骨架未过校验）】\n${assistantRound1}\n\n` +
+            `【次轮 assistant（非法 JSON）】\n${spineAssistant}`,
+          storyboardStrategy:
+            "narrative_skeleton · L1 · JSON.parse failed (自动重试后)",
+          meta: {
+            spineFailureStage: "json_parse",
+            jsonParseError: j2.message,
+            firstValidateError: msgFirst,
+          },
+        });
+        throw new Error("模型输出不是合法 JSON，请重试");
+      }
+      spineParsed = j2.value;
+      try {
+        validated = parseAndValidateSpine({
+          parsed: spineParsed,
+          expectedSkeletonCount: targetScenes,
+          dur,
+        });
+      } catch (e2) {
+        const msgSecond = e2 instanceof Error ? e2.message : String(e2);
+        await logSpineL1Failure({
+          user: spineUser,
+          assistantRaw:
+            `【首轮】\n${assistantRound1}\n\n【次轮】\n${spineAssistant}`,
+          storyboardStrategy:
+            "narrative_skeleton · L1 · validate failed (首轮与自动重试后均未通过)",
+          meta: {
+            spineFailureStage: "validate",
+            firstValidateError: msgFirst,
+            secondValidateError: msgSecond,
+          },
+        });
+        throw e2;
+      }
     }
 
     phases.push({

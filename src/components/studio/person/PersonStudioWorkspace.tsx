@@ -30,6 +30,11 @@ const LAST_LLM_PROFILE_KEY = "historai:llmProfileId";
 const LAST_VOLC_TTS_VOICE_KEY = "historai:volcTtsVoice";
 const LAST_IMAGE_PROFILE_KEY = "historai:imageProfileId";
 
+function isAbortError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === "AbortError") return true;
+  return e instanceof Error && e.name === "AbortError";
+}
+
 type LlmProfileOption = {
   id: string;
   vendor: string;
@@ -97,7 +102,7 @@ const badgeRunning = `${badgeBase} bg-amber-950/45 text-amber-50/90 ring-amber-7
 const badgeFail = `${badgeBase} bg-rose-950/40 text-rose-100 ring-rose-800/40`;
 const badgeMuted = `${badgeBase} bg-zinc-900/90 text-zinc-500 ring-zinc-800/70`;
 
-/** 分镜表 · 操作列按钮（镜 1 / 镜 2+ 共用；层级：主出图 → 次出图 → 封面参考 → 语音 → 保存） */
+/** 分镜表 · 操作列按钮（镜 1 / 镜 2+ 共用；层级：主出图 → 次出图 → 封面参考 → 语音） */
 const storyboardOpDivider =
   "h-px w-full shrink-0 bg-gradient-to-r from-transparent via-zinc-700/55 to-transparent";
 const storyboardOpStack =
@@ -109,8 +114,6 @@ const storyboardOpSecondaryBtn = `${storyboardOpBtnBase} border border-zinc-600/
 /** 封面参考出图：与主按钮同学科、偏描边以区分「第二条出图路径」 */
 const storyboardOpCoverRefBtn = `${storyboardOpBtnBase} border border-amber-400/35 bg-amber-950/20 text-amber-100/95 hover:border-amber-400/50 hover:bg-amber-500/12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/35 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950`;
 const storyboardOpTtsBtn = `${storyboardOpBtnBase} border border-sky-500/40 bg-gradient-to-b from-sky-500/16 to-sky-950/45 text-sky-50 shadow-sm shadow-sky-950/25 ring-1 ring-inset ring-sky-300/10 hover:border-sky-400/50 hover:from-sky-500/22 hover:to-sky-950/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/35 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950`;
-/** 出图成功后的落盘动作 */
-const storyboardOpSaveBtn = `${storyboardOpBtnBase} min-h-[2.4rem] border border-zinc-700/75 bg-zinc-900/35 text-zinc-200 hover:border-emerald-700/45 hover:bg-emerald-950/35 hover:text-emerald-100/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/25 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950`;
 
 /** 分镜表顶部：批量出图 / 语音 / 导出（同一行、样式统一） */
 const storyboardBatchToolbarBtn =
@@ -118,8 +121,8 @@ const storyboardBatchToolbarBtn =
 const storyboardBatchToolbarStopBtn =
   "inline-flex min-h-[2.35rem] shrink-0 items-center justify-center rounded-lg border border-rose-700/55 bg-rose-500/[0.12] px-3 py-2 text-xs font-semibold text-rose-50 shadow-sm transition hover:border-rose-500/65 hover:bg-rose-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-[13px]";
 
-/** 整稿口播工具栏：润色（次要） / 豆包 TTS（辅助强调） */
-const voiceoverToolbarPolishBtn =
+/** 整稿口播工具栏：次要操作（如 TTS 区「下载」链接样式） */
+const voiceoverToolbarSecondaryBtn =
   "inline-flex min-h-[2.35rem] items-center justify-center gap-1.5 rounded-lg border border-zinc-600/45 bg-zinc-950/70 px-3 py-2 text-xs font-semibold text-zinc-100 shadow-sm ring-1 ring-zinc-800/35 transition hover:border-violet-500/35 hover:bg-zinc-900/80 hover:ring-violet-500/15 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-[13px]";
 const voiceoverToolbarTtsBtn =
   "inline-flex min-h-[2.35rem] items-center justify-center gap-1.5 rounded-lg border border-sky-600/40 bg-sky-950/40 px-3 py-2 text-xs font-semibold text-sky-50/95 shadow-sm ring-1 ring-sky-900/35 transition hover:border-sky-400/45 hover:bg-sky-950/55 disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-[13px]";
@@ -156,7 +159,11 @@ const workflowSteps = [
     desc: "强冲突系列预设",
   },
   { n: "2", label: "高光与呈现", desc: "切片标题与说明" },
-  { n: "3", label: "生成封面", desc: "外宣竖屏底图（独立 API）" },
+  {
+    n: "3",
+    label: "生成封面",
+    desc: "外宣竖屏底图，人物居左、右侧留白（独立 API）",
+  },
   { n: "4", label: "文案与分镜", desc: "成片选项与主生成镜表" },
 ] as const;
 
@@ -165,6 +172,28 @@ const MAX_COVER_GALLERY = 5;
 
 /** 转为 base64 data URL 后会显著膨胀，控制体积避免请求体过大 */
 const MAX_COVER_REFERENCE_FILE_BYTES = 20 * 1024 * 1024;
+
+type UploadRefImageJson = { error?: string; url?: string; success?: boolean };
+
+/** 读取 `/api/upload-reference-image` 响应（兼容非 JSON 或 HTML 错误页） */
+function parseUploadReferenceImageResponse(
+  res: Response,
+  bodyText: string,
+): { httpOk: boolean; data: UploadRefImageJson } {
+  try {
+    const data = JSON.parse(bodyText) as UploadRefImageJson;
+    return { httpOk: res.ok, data };
+  } catch {
+    return {
+      httpOk: false,
+      data: {
+        error:
+          bodyText.trim().slice(0, 240) ||
+          `上传接口返回非 JSON（HTTP ${res.status}）`,
+      },
+    };
+  }
+}
 
 type AssetRow = {
   sceneIndex: number;
@@ -222,7 +251,6 @@ export function PersonStudioWorkspace() {
   /** L2 整稿口播正文：生成完成后默认收起（与 L1 子块一致） */
   const [voiceoverDraftPanelExpanded, setVoiceoverDraftPanelExpanded] =
     useState(false);
-  const [polishBusy, setPolishBusy] = useState(false);
   const [voiceoverTtsBusy, setVoiceoverTtsBusy] = useState(false);
   const [voiceoverTtsAudioUrl, setVoiceoverTtsAudioUrl] = useState<
     string | null
@@ -253,6 +281,8 @@ export function PersonStudioWorkspace() {
   const [coverGallery, setCoverGallery] = useState<CoverGalleryItem[]>([]);
   const [coverDeleteBusy, setCoverDeleteBusy] = useState(false);
   const coverRefFileInputRef = useRef<HTMLInputElement>(null);
+  /** 直接上传为封面底图（不经文生图），与 AI 出图后同一套落库与画廊逻辑 */
+  const coverDirectUploadInputRef = useRef<HTMLInputElement>(null);
   const [selectedCoverId, setSelectedCoverId] = useState<string | null>(null);
 
   const latestCoverUrl = useMemo(() => {
@@ -265,6 +295,8 @@ export function PersonStudioWorkspace() {
   const [batchBusy, setBatchBusy] = useState(false);
   /** 批量生成时设为 true 可中断循环 */
   const stopBatchRef = useRef(false);
+  /** 当前批量出图中这一镜的 fetch，用于「停止生成」时 abort */
+  const batchAssetAbortRef = useRef<AbortController | null>(null);
   /** 用于在新一条 L1 hook 出现时收起时间线 / 分镜骨架子块 */
   const lastNarrativeSpineHookRef = useRef<string | undefined>(undefined);
   const [llmProfiles, setLlmProfiles] = useState<LlmProfileOption[]>([]);
@@ -484,10 +516,9 @@ export function PersonStudioWorkspace() {
     [voiceoverTtsExportMime, sliceFolderTitle],
   );
 
-  const [sliceSaveBusy, setSliceSaveBusy] = useState<string | null>(null);
   const [sliceSaveHint, setSliceSaveHint] = useState<string | null>(null);
   const [exportBundleBusy, setExportBundleBusy] = useState(false);
-  /** 逐镜旁白 TTS：与静帧共用 stem，写入 slice-exports */
+  /** 逐镜旁白 TTS：fileStem 为 {projectSeed}-scene-audio-NN，写入 slice-exports */
   const [sceneTtsByIndex, setSceneTtsByIndex] = useState<
     Record<number, { status: "running" | "success" | "failed"; error?: string }>
   >({});
@@ -506,32 +537,11 @@ export function PersonStudioWorkspace() {
     number | null
   >(null);
 
-  const seedanceResetKey = useMemo(
-    () =>
-      result?.scenes?.length ?
-        `${result.hook ?? ""}|${result.scenes.map((s) => `${s.index}:${s.visualDescription.length}:${s.narration.length}`).join(";")}`
-      : "",
-    [result?.hook, result?.scenes],
-  );
-
-  useEffect(() => {
-    setSeedancePromptByIndex({});
-    setSeedancePromptError(null);
-  }, [seedanceResetKey]);
-
-  const saveSliceImageToProject = useCallback(
-    async (
-      imageUrl: string,
-      kind: { role: "scene"; sceneIndex: number; fileStem?: string },
-    ) => {
-      const key = `scene-${kind.sceneIndex}`;
-      setSliceSaveBusy(key);
-      setSliceSaveHint(null);
+  /** 出图成功后写入 slice-exports；不占用手动 busy，失败仅更新 sliceSaveHint */
+  const persistSceneImageQuietly = useCallback(
+    async (imageUrl: string, sceneIndex: number, fileStem: string) => {
+      if (!subject.trim()) return;
       try {
-        if (!subject.trim()) {
-          setSliceSaveHint("请先填写主角（人物），再保存图片。");
-          return;
-        }
         const res = await fetch("/api/save-slice-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -539,24 +549,23 @@ export function PersonStudioWorkspace() {
             imageUrl,
             subject: subject.trim(),
             title: sliceFolderTitle,
-            role: kind.role,
-            sceneIndex: kind.sceneIndex,
-            ...(kind.fileStem ? { fileStem: kind.fileStem } : {}),
+            role: "scene",
+            sceneIndex,
+            fileStem,
           }),
         });
-        const json = (await res.json()) as {
-          error?: string;
-          relativePath?: string;
-        };
+        const json = (await res.json()) as { error?: string; relativePath?: string };
         if (!res.ok) {
-          setSliceSaveHint(json.error ?? "保存失败");
-          return;
+          setSliceSaveHint(
+            `镜 ${sceneIndex} 自动保存失败：${json.error ?? String(res.status)}`,
+          );
         }
-        setSliceSaveHint(`已保存到项目：${json.relativePath ?? ""}`);
       } catch (e) {
-        setSliceSaveHint(e instanceof Error ? e.message : "保存失败");
-      } finally {
-        setSliceSaveBusy(null);
+        setSliceSaveHint(
+          e instanceof Error ?
+            `镜 ${sceneIndex} 自动保存失败：${e.message}`
+          : `镜 ${sceneIndex} 自动保存失败`,
+        );
       }
     },
     [subject, sliceFolderTitle],
@@ -744,8 +753,13 @@ export function PersonStudioWorkspace() {
         setSeedancePromptError(json.error ?? "生成失败");
         return;
       }
+      const list = json.prompts ?? [];
+      if (!list.length) {
+        setSeedancePromptError("接口未返回 prompts，请重试或查看服务端日志");
+        return;
+      }
       const next: Record<number, SeedancePromptSceneOutput> = {};
-      for (const p of json.prompts ?? []) {
+      for (const p of list) {
         next[p.index] = p;
       }
       setSeedancePromptByIndex(next);
@@ -861,6 +875,8 @@ export function PersonStudioWorkspace() {
               },
             ]),
           ),
+          voiceoverFullText:
+            voiceoverDraft.trim() || result?.voiceoverFullText?.trim() || undefined,
         }),
       });
       const json = (await res.json()) as {
@@ -893,11 +909,12 @@ export function PersonStudioWorkspace() {
     result,
     latestCoverUrl,
     assets,
+    voiceoverDraft,
   ]);
 
   const sceneAudioStem = useCallback(
     (sceneIndex: number) =>
-      `${projectSeed}-scene-${String(sceneIndex).padStart(2, "0")}`,
+      `${projectSeed}-scene-audio-${String(sceneIndex).padStart(2, "0")}`,
     [projectSeed],
   );
 
@@ -1025,6 +1042,8 @@ export function PersonStudioWorkspace() {
   const resetAssets = useCallback(() => {
     setAssets({});
     setSceneTtsByIndex({});
+    setSeedancePromptByIndex({});
+    setSeedancePromptError(null);
   }, []);
 
   const runSuggestCharacters = async () => {
@@ -1172,15 +1191,21 @@ export function PersonStudioWorkspace() {
         );
         setResult(null);
         setVoiceoverDraft("");
+        setSeedancePromptByIndex({});
+        setSeedancePromptError(null);
         return;
       }
       const gen = json as GenerationResult;
       setResult(gen);
       setVoiceoverDraft(gen.voiceoverFullText ?? "");
+      setSeedancePromptByIndex({});
+      setSeedancePromptError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "网络错误");
       setResult(null);
       setVoiceoverDraft("");
+      setSeedancePromptByIndex({});
+      setSeedancePromptError(null);
     } finally {
       setLoading(false);
     }
@@ -1231,58 +1256,12 @@ export function PersonStudioWorkspace() {
       setResult(gen);
       setVoiceoverDraft(gen.voiceoverFullText ?? "");
       setVoiceoverDraftPanelExpanded(false);
+      setSeedancePromptByIndex({});
+      setSeedancePromptError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "网络错误");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const runPolishVoiceover = async () => {
-    if (!result?.sceneSkeleton?.length || !voiceoverDraft.trim()) return;
-    setPolishBusy(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/polish-voiceover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profileId: profileId || undefined,
-          paragraphCount: result.sceneSkeleton.length,
-          voiceoverFullText: voiceoverDraft.trim(),
-          hook: result.hook,
-          subject: subject.trim(),
-          seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
-          dynasty: dynasty.trim() || undefined,
-          tone,
-        }),
-      });
-      const json = (await res.json()) as {
-        error?: string;
-        voiceoverFullText?: string;
-        voiceoverParagraphs?: string[];
-      };
-      if (!res.ok) {
-        setError(json.error ?? "润色失败");
-        return;
-      }
-      const nextFull = json.voiceoverFullText ?? "";
-      setVoiceoverDraft(nextFull);
-      setResult((prev) =>
-        prev ?
-          {
-            ...prev,
-            voiceoverFullText: nextFull,
-            voiceoverParagraphs: json.voiceoverParagraphs ?? prev.voiceoverParagraphs,
-          }
-        : null,
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "润色失败");
-    } finally {
-      setPolishBusy(false);
     }
   };
 
@@ -1495,13 +1474,15 @@ export function PersonStudioWorkspace() {
     visual: string,
     narration: string | undefined,
     ref?: { referenceImageUrl?: string; referenceRole?: "previous" | "cover" },
-  ): Promise<{ success: boolean; url?: string }> => {
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ success: boolean; url?: string; cancelled?: boolean }> => {
     setAssets((prev) => ({
       ...prev,
       [sceneIndex]: {
         ...prev[sceneIndex],
         sceneIndex,
         status: "running",
+        error: undefined,
       },
     }));
     try {
@@ -1523,21 +1504,39 @@ export function PersonStudioWorkspace() {
           referenceImageUrl: ref?.referenceImageUrl,
           referenceRole: ref?.referenceRole,
         }),
+        signal: opts?.signal,
       });
-      const json = await res.json();
+      const json = (await res.json()) as {
+        error?: string;
+        url?: string;
+        projectSeed?: string;
+        provider?: string;
+      };
       if (!res.ok) {
-        setAssets((prev) => ({
-          ...prev,
-          [sceneIndex]: {
-            ...prev[sceneIndex],
+        if (res.status === 400 && json.error) {
+          setError(String(json.error));
+        }
+        setAssets((prev) => {
+          const r = prev[sceneIndex];
+          const next: AssetRow = {
             sceneIndex,
             status: "failed",
-            error: json.error ?? "失败",
-          },
-        }));
+            error: json.error ?? `HTTP ${res.status}`,
+          };
+          if (r?.url) {
+            next.url = r.url;
+            next.provider = r.provider;
+          }
+          return { ...prev, [sceneIndex]: next };
+        });
         return { success: false };
       }
       const url = json.url as string;
+      const seedForFile =
+        typeof json.projectSeed === "string" && json.projectSeed.trim() ?
+          json.projectSeed.trim()
+        : projectSeed;
+      const fileStem = `${seedForFile}-scene-img-${String(sceneIndex).padStart(2, "0")}`;
       setAssets((prev) => ({
         ...prev,
         [sceneIndex]: {
@@ -1546,20 +1545,44 @@ export function PersonStudioWorkspace() {
           status: "success",
           url,
           provider: json.provider as string | undefined,
+          error: undefined,
         },
       }));
 
+      void persistSceneImageQuietly(url, sceneIndex, fileStem);
+
       return { success: true, url };
     } catch (e) {
-      setAssets((prev) => ({
-        ...prev,
-        [sceneIndex]: {
-          ...prev[sceneIndex],
+      if (isAbortError(e) || opts?.signal?.aborted) {
+        setAssets((prev) => {
+          const r = prev[sceneIndex];
+          const next: AssetRow = {
+            sceneIndex,
+            status: "failed",
+            error: "已停止",
+          };
+          if (r?.url) {
+            next.url = r.url;
+            next.provider = r.provider;
+          }
+          return { ...prev, [sceneIndex]: next };
+        });
+        return { success: false, cancelled: true };
+      }
+      const msg = e instanceof Error ? e.message : "请求失败";
+      setAssets((prev) => {
+        const r = prev[sceneIndex];
+        const next: AssetRow = {
           sceneIndex,
           status: "failed",
-          error: e instanceof Error ? e.message : "失败",
-        },
-      }));
+          error: msg,
+        };
+        if (r?.url) {
+          next.url = r.url;
+          next.provider = r.provider;
+        }
+        return { ...prev, [sceneIndex]: next };
+      });
       return { success: false };
     }
   };
@@ -1595,78 +1618,15 @@ export function PersonStudioWorkspace() {
     }
   }, [coverGallery, selectedCoverId]);
 
-
-  const runStandaloneCoverRequest = async (
-    referenceImageUrl?: string | null,
-  ): Promise<boolean> => {
-    if (!canGenerateStandaloneCover) {
-      setError(
-        "请先填写人物，并至少填写系列名、切片标题或切片说明之一。",
-      );
-      return false;
-    }
-    if (coverGallery.length >= MAX_COVER_GALLERY) {
-      setError(
-        `已有 ${MAX_COVER_GALLERY} 张封面预览。请先勾选要移除的缩略图，点击下方「删除已勾选」，将同步删除 slice-exports 内已保存的图片后再生成新的封面。`,
-      );
-      return false;
-    }
-    setCoverRequest({ status: "running" });
-    setError(null);
-    setSliceSaveHint(null);
-    try {
-      const refTrim = referenceImageUrl?.trim() ?? "";
-      const seedForApi =
-        refTrim ?
-          `${projectSeed}-ref-${Date.now().toString(36)}`
-            .replace(/\s+/g, "-")
-            .slice(0, 64)
-        : projectSeed;
-      const res = await fetch("/api/assets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sceneIndex: 0,
-          standaloneCover: true,
-          visualDescription: "—",
-          seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
-          stylePreset,
-          projectSeed: seedForApi,
-          imageProfileId: imageProfileId || undefined,
-          subject: subject.trim() || undefined,
-          dynasty: dynasty.trim() || undefined,
-          ...(refTrim ?
-            { referenceImageUrl: refTrim, referenceRole: "cover" as const }
-          : {}),
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        setCoverRequest({
-          status: "failed",
-          error: String(json.error ?? "失败"),
-        });
-        return false;
-      }
-      const coverUrl = json.url as string;
-      const seedForFile =
-        typeof (json as { projectSeed?: string }).projectSeed === "string" &&
-        (json as { projectSeed: string }).projectSeed.trim() ?
-          (json as { projectSeed: string }).projectSeed.trim()
-        : seedForApi;
-
+  const appendCoverToGalleryAndPersist = useCallback(
+    (args: { coverUrl: string; seedForFile: string; provider?: string }) => {
+      const { coverUrl, seedForFile, provider } = args;
       const gid =
         typeof crypto !== "undefined" && "randomUUID" in crypto ?
           crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       setCoverGallery((prev) => [
-        {
-          id: gid,
-          url: coverUrl,
-          provider: json.provider as string | undefined,
-        },
+        { id: gid, url: coverUrl, provider },
         ...prev,
       ]);
       setSelectedCoverId(gid);
@@ -1712,13 +1672,75 @@ export function PersonStudioWorkspace() {
           );
         }
       })();
+    },
+    [subject, sliceFolderTitle],
+  );
+
+  const runStandaloneCoverRequest = async (
+    referenceImageUrl?: string | null,
+  ): Promise<boolean> => {
+    if (!canGenerateStandaloneCover) {
+      setError(
+        "请先填写人物，并至少填写系列名、切片标题或切片说明之一。",
+      );
+      return false;
+    }
+    if (coverGallery.length >= MAX_COVER_GALLERY) {
+      setError(
+        `已有 ${MAX_COVER_GALLERY} 张封面预览。请先勾选要移除的缩略图，点击下方「删除已勾选」，将同步删除 slice-exports 内已保存的图片后再生成新的封面。`,
+      );
+      return false;
+    }
+    setCoverRequest({ status: "running" });
+    setError(null);
+    setSliceSaveHint(null);
+    try {
+      const refTrim = referenceImageUrl?.trim() ?? "";
+      /** 带参考时 API 仍传 `-ref-…`，与无参考调用区分；保存封面文件名统一用下方 `projectSeed`。 */
+      const seedForApi =
+        refTrim ?
+          `${projectSeed}-ref-${Date.now().toString(36)}`
+            .replace(/\s+/g, "-")
+            .slice(0, 64)
+        : projectSeed;
+      const res = await fetch("/api/assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sceneIndex: 0,
+          standaloneCover: true,
+          visualDescription: "—",
+          seriesTitle: seriesTitle.trim() || undefined,
+          sliceTitle: sliceTitle.trim() || undefined,
+          sliceAngle: sliceAngle.trim() || undefined,
+          stylePreset,
+          projectSeed: seedForApi,
+          imageProfileId: imageProfileId || undefined,
+          subject: subject.trim() || undefined,
+          dynasty: dynasty.trim() || undefined,
+          ...(refTrim ?
+            { referenceImageUrl: refTrim, referenceRole: "cover" as const }
+          : {}),
+        }),
+      });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        if (res.status === 400 && json.error) {
+          setError(String(json.error));
+        }
+        setCoverRequest({ status: "failed" });
+        return false;
+      }
+      const coverUrl = json.url as string;
+      appendCoverToGalleryAndPersist({
+        coverUrl,
+        seedForFile: projectSeed,
+        provider: json.provider as string | undefined,
+      });
 
       return true;
     } catch (e) {
-      setCoverRequest({
-        status: "failed",
-        error: e instanceof Error ? e.message : "失败",
-      });
+      setCoverRequest({ status: "failed" });
       return false;
     }
   };
@@ -1734,6 +1756,8 @@ export function PersonStudioWorkspace() {
       const standaloneU = latestCoverUrl;
       for (const s of ordered) {
         if (stopBatchRef.current) break;
+        const ac = new AbortController();
+        batchAssetAbortRef.current = ac;
         const ref = resolveReferenceForScene(
           s.index,
           urlByIndex,
@@ -1745,7 +1769,9 @@ export function PersonStudioWorkspace() {
           s.visualDescription,
           s.narration,
           ref,
+          { signal: ac.signal },
         );
+        if (out.cancelled || stopBatchRef.current) break;
         if (out.success && out.url) {
           urlByIndex[s.index] = out.url;
         }
@@ -1781,7 +1807,7 @@ export function PersonStudioWorkspace() {
       return;
     }
     if (f.size > MAX_COVER_REFERENCE_FILE_BYTES) {
-      setError("参考图请小于 20MB（与 Remit.ee 图床限制一致）。");
+      setError("参考图请小于 20MB。");
       return;
     }
 
@@ -1790,7 +1816,7 @@ export function PersonStudioWorkspace() {
     setCoverRequest({ status: "running" });
 
     try {
-      // 1. 后端代理上传到 Remit.ee，得到公网 HTTPS 参考图 URL
+      // 1. 后端上传到火山 TOS，得到公网 HTTPS 对象 URL
       const arrayBuffer = await f.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
       let binary = "";
@@ -1810,15 +1836,22 @@ export function PersonStudioWorkspace() {
         }),
       });
 
-      const uploadJson = await uploadRes.json();
+      const uploadRaw = await uploadRes.text();
+      const { httpOk, data: uploadJson } = parseUploadReferenceImageResponse(
+        uploadRes,
+        uploadRaw,
+      );
 
-      if (!uploadRes.ok) {
-        setCoverRequest({ status: "failed", error: uploadJson.error || "上传到图床失败" });
+      if (!httpOk || !uploadJson.url?.trim()) {
+        setCoverRequest({
+          status: "failed",
+          error: uploadJson.error || "上传到图床失败",
+        });
         return;
       }
 
       // 2. 使用图床 URL 作为参考图生成封面
-      await runStandaloneCoverRequest(uploadJson.url);
+      await runStandaloneCoverRequest(uploadJson.url.trim());
 
     } catch (err) {
       setCoverRequest({ status: "failed", error: err instanceof Error ? err.message : "上传失败" });
@@ -1827,7 +1860,84 @@ export function PersonStudioWorkspace() {
     }
   };
 
-  /** 镜号 ≥2 每镜均以同一封面为图生图参考（强锁脸；场面跳变大单镜改「按切片内容生成」） */
+  const onUploadCoverOnlyFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!canGenerateStandaloneCover) {
+      setError(
+        "请先填写人物，并至少填写系列名、切片标题或切片说明之一。",
+      );
+      return;
+    }
+    if (coverGallery.length >= MAX_COVER_GALLERY) {
+      setError(
+        `已有 ${MAX_COVER_GALLERY} 张封面预览。请先勾选要移除的缩略图，点击下方「删除已勾选」，将同步删除 slice-exports 内已保存的图片后再生成新的封面。`,
+      );
+      return;
+    }
+    if (!f.type.startsWith("image/")) {
+      setError("请选择图片文件。");
+      return;
+    }
+    if (f.size > MAX_COVER_REFERENCE_FILE_BYTES) {
+      setError("封面图请小于 20MB。");
+      return;
+    }
+
+    setBatchBusy(true);
+    setError(null);
+    setCoverRequest({ status: "running" });
+    setSliceSaveHint(null);
+    try {
+      const arrayBuffer = await f.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]!);
+      }
+      const base64 = btoa(binary);
+
+      const uploadRes = await fetch("/api/upload-reference-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: f.name,
+          mimeType: f.type,
+          fileSize: f.size,
+          fileData: base64,
+        }),
+      });
+
+      const uploadRaw = await uploadRes.text();
+      const { httpOk, data: uploadJson } = parseUploadReferenceImageResponse(
+        uploadRes,
+        uploadRaw,
+      );
+
+      if (!httpOk || !uploadJson.url?.trim()) {
+        setCoverRequest({
+          status: "failed",
+          error: uploadJson.error || "上传到图床失败",
+        });
+        return;
+      }
+
+      appendCoverToGalleryAndPersist({
+        coverUrl: uploadJson.url.trim(),
+        seedForFile: projectSeed,
+      });
+    } catch (err) {
+      setCoverRequest({
+        status: "failed",
+        error: err instanceof Error ? err.message : "上传失败",
+      });
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  /** 各镜顺序出图：镜 1 为正片首镜（文生）；镜 ≥2 以封面为图生图参考。场面跳变可单镜改「按切片内容生成」。 */
   const runRemainingAssetsFromCover = async () => {
     if (!result?.scenes.length) return;
     const coverUrl = latestCoverUrl;
@@ -1840,7 +1950,7 @@ export function PersonStudioWorkspace() {
     stopBatchRef.current = false;
     try {
       const ordered = [...result.scenes]
-        .filter((s) => s.index > 1)
+        .filter((s) => s.index >= 1)
         .sort((a, b) => a.index - b.index);
       const urlByIndex: Record<number, string> = {};
       const coverRef = {
@@ -1849,12 +1959,16 @@ export function PersonStudioWorkspace() {
       };
       for (const s of ordered) {
         if (stopBatchRef.current) break;
+        const ac = new AbortController();
+        batchAssetAbortRef.current = ac;
         const out = await runSingleAsset(
           s.index,
           s.visualDescription,
           s.narration,
           coverRef,
+          { signal: ac.signal },
         );
+        if (out.cancelled || stopBatchRef.current) break;
         if (out.success && out.url) {
           urlByIndex[s.index] = out.url;
         }
@@ -1902,9 +2016,9 @@ export function PersonStudioWorkspace() {
                       </div>
                       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[minmax(0,7.75rem)_1fr] sm:gap-3">
                         <label className="block min-w-0">
-                          <span className={groupTitleClass}>厂商</span>
                           <select
-                            className={`${headerSelectClass} mt-1 cursor-pointer`}
+                            aria-label="文案分镜模型厂商"
+                            className={`${headerSelectClass} cursor-pointer`}
                             value={selectedVendor}
                             disabled={!vendorsOrdered.length}
                             onChange={(e) =>
@@ -1919,9 +2033,9 @@ export function PersonStudioWorkspace() {
                           </select>
                         </label>
                         <label className="block min-w-0">
-                          <span className={groupTitleClass}>模型档案</span>
                           <select
-                            className={`${headerSelectClass} mt-1 cursor-pointer`}
+                            aria-label="文案分镜模型档案"
+                            className={`${headerSelectClass} cursor-pointer`}
                             value={profileId}
                             disabled={!modelsInVendor.length}
                             onChange={(e) => setProfileId(e.target.value)}
@@ -1962,9 +2076,9 @@ export function PersonStudioWorkspace() {
                       </div>
                       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[minmax(0,7.75rem)_1fr] sm:gap-3">
                         <label className="block min-w-0">
-                          <span className={groupTitleClass}>厂商</span>
                           <select
-                            className={`${headerSelectClass} mt-1 cursor-pointer`}
+                            aria-label="文生图厂商"
+                            className={`${headerSelectClass} cursor-pointer`}
                             value={selectedImageVendor}
                             disabled={!imageVendorsOrdered.length}
                             onChange={(e) =>
@@ -1979,9 +2093,9 @@ export function PersonStudioWorkspace() {
                           </select>
                         </label>
                         <label className="block min-w-0">
-                          <span className={groupTitleClass}>档案</span>
                           <select
-                            className={`${headerSelectClass} mt-1 cursor-pointer`}
+                            aria-label="文生图档案"
+                            className={`${headerSelectClass} cursor-pointer`}
                             value={imageProfileId}
                             disabled={!modelsInImageVendor.length}
                             onChange={(e) => setImageProfileId(e.target.value)}
@@ -2393,6 +2507,9 @@ export function PersonStudioWorkspace() {
                   Seedream」等已在配置中支持参考图的档案。
                 </p>
               ) : null}
+              <p className="mt-3 max-w-2xl text-[11px] leading-relaxed text-zinc-400">
+                封面底图为纯画面、无内嵌字；文生图提示已固定为人物在画幅左侧，右侧纵向留白便于后期叠标题与说明。
+              </p>
             </div>
             <div className="mt-5 flex flex-col gap-4 border-t border-zinc-800/70 pt-5 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
               <label className="block min-w-0 flex-1 sm:max-w-md">
@@ -2422,6 +2539,14 @@ export function PersonStudioWorkspace() {
                   aria-hidden
                   onChange={onCoverReferenceFileChange}
                 />
+                <input
+                  ref={coverDirectUploadInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  aria-hidden
+                  onChange={onUploadCoverOnlyFileChange}
+                />
                 <button
                   type="button"
                   disabled={
@@ -2440,6 +2565,23 @@ export function PersonStudioWorkspace() {
                   {coverRequest.status === "running" ?
                     "封面生成中…"
                   : "生成封面底图"}
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    batchBusy ||
+                    !canGenerateStandaloneCover ||
+                    coverGallery.length >= MAX_COVER_GALLERY
+                  }
+                  title={
+                    coverGallery.length >= MAX_COVER_GALLERY ?
+                      `已达 ${MAX_COVER_GALLERY} 张上限，请先勾选并删除若干封面后再上传`
+                    : "上传本地图片为封面底图（经图床公网 URL）；落盘文件名与「生成封面底图」相同（同 projectSeed；若目录中已有同名则自动 -2、-3…）"
+                  }
+                  onClick={() => coverDirectUploadInputRef.current?.click()}
+                  className={`${aiActionClass} w-full shrink-0 sm:w-auto`}
+                >
+                  上传封面图
                 </button>
                 <button
                   type="button"
@@ -2471,14 +2613,18 @@ export function PersonStudioWorkspace() {
                   张。请勾选需移除的封面，点击下方「删除已勾选」清空名额；若该张已成功自动保存至项目目录，将同步删除磁盘上的对应文件。
                 </p>
               ) : null}
-              {coverGallery.length === 0 && coverRequest.status !== "running" ? (
-                <p className="text-[11px] text-zinc-600">尚未生成封面预览。</p>
+              {coverRequest.status === "failed" && coverRequest.error ? (
+                <p className="mb-2 max-w-2xl text-sm leading-snug text-rose-200">
+                  {coverRequest.error}
+                </p>
               ) : null}
               {coverRequest.status === "running" ? (
                 <p className="text-[11px] text-amber-200/80">正在请求封面…</p>
               ) : null}
-              {coverRequest.status === "failed" && coverRequest.error ? (
-                <p className="text-sm text-rose-200">{coverRequest.error}</p>
+              {coverGallery.length === 0 && coverRequest.status === "idle" ? (
+                <p className="text-[11px] text-zinc-600">
+                  尚未添加封面预览。可使用上方「生成封面底图」「上传封面图」或「按参考图重生」。
+                </p>
               ) : null}
               {coverGallery.length > 0 ? (
                 <>
@@ -2656,18 +2802,12 @@ export function PersonStudioWorkspace() {
             <div className="mt-4 border-t border-zinc-800/70 pt-4">
               <button
                 type="button"
-                onClick={() => {
-                  if (result?.pipelinePending === "voiceover") {
-                    void runGenerateVoiceoverOnly();
-                  } else {
-                    void runGenerate();
-                  }
-                }}
+                onClick={() => void runGenerate()}
                 disabled={
                   loading ||
-                  polishBusy ||
                   !subject.trim() ||
-                  result?.pipelinePending === "scenes"
+                  result?.pipelinePending === "scenes" ||
+                  result?.pipelinePending === "voiceover"
                 }
                 className={stepPrimaryGenerateStandaloneBtnClass}
               >
@@ -2676,7 +2816,7 @@ export function PersonStudioWorkspace() {
                 : result?.pipelinePending === "scenes" ?
                   "下一步：整稿区「生成分镜」"
                 : result?.pipelinePending === "voiceover" ?
-                  "生成整稿口播（L2）"
+                  "叙事骨架（L1）已生成"
                 : "生成叙事骨架（L1）"}
               </button>
             </div>
@@ -2951,34 +3091,25 @@ export function PersonStudioWorkspace() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  disabled={
-                    polishBusy ||
-                    loading ||
-                    result.pipelinePending === "voiceover" ||
-                    !result.sceneSkeleton?.length ||
-                    !voiceoverDraft.trim()
-                  }
-                  onClick={() => void runPolishVoiceover()}
-                  title="在不改变史实与人称前提下润色口播；段落条数与镜数一致"
-                  className={voiceoverToolbarPolishBtn}
-                >
-                  <svg
-                    className="h-3.5 w-3.5 shrink-0 text-violet-300/90"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                    aria-hidden
+                {result.pipelinePending === "voiceover" ?
+                  <button
+                    type="button"
+                    disabled={
+                      loading ||
+                      !subject.trim() ||
+                      !result.sceneSkeleton?.length
+                    }
+                    onClick={() => void runGenerateVoiceoverOnly()}
+                    title="在已定的叙事骨架上生成整稿口播（L2）"
+                    className={voiceoverToolbarPrimaryBtn}
                   >
-                    <path d="M15.98 1.804a1 1 0 00-1.96-.392l-.092.392-.293 1.269a2.75 2.75 0 01-2.025 2.025l-1.269.293-.392.092a1 1 0 00.392 1.96l.392-.092 1.269-.293a2.75 2.75 0 012.025 2.025l.293 1.269.092.392a1 1 0 001.96-.392l-.092-.392-.293-1.269a2.75 2.75 0 012.025-2.025l1.269-.293.392-.092a1 1 0 00-.392-1.96l-.392.092-1.269.293a2.75 2.75 0 01-2.025-2.025l-.293-1.269-.092-.392zM6 11a1 1 0 100-2 1 1 0 000 2zm2.081-5.382a1 1 0 00-1.962-.393l-.062.393-.293 1.775a1.75 1.75 0 01-1.285 1.285l-1.775.293-.393.062a1 1 0 00.393 1.962l.393-.062 1.775-.293a1.75 1.75 0 011.285 1.285l.293 1.775.062.393a1 1 0 001.962-.393l-.062-.393-.293-1.775a1.75 1.75 0 011.285-1.285l1.775-.293.393-.062a1 1 0 00-.393-1.962l-.393.062-1.775.293a1.75 1.75 0 01-1.285-1.285l-.293-1.775-.062-.393z" />
-                  </svg>
-                  {polishBusy ? "润色中…" : "AI 润色口播"}
-                </button>
+                    {loading ? "生成中…" : "生成整稿口播（L2）"}
+                  </button>
+                : null}
                 <button
                   type="button"
                   disabled={
                     voiceoverTtsBusy ||
-                    polishBusy ||
                     loading ||
                     result.pipelinePending === "voiceover" ||
                     !voiceoverDraft.trim() ||
@@ -3012,7 +3143,6 @@ export function PersonStudioWorkspace() {
                 <button
                   type="button"
                   disabled={
-                    polishBusy ||
                     loading ||
                     !result.sceneSkeleton?.length ||
                     !voiceoverDraft.trim()
@@ -3088,7 +3218,7 @@ export function PersonStudioWorkspace() {
                       <a
                         href={voiceoverTtsAudioUrl}
                         download={voiceoverTtsDownloadFilename}
-                        className={`${voiceoverToolbarPolishBtn} shrink-0 no-underline`}
+                        className={`${voiceoverToolbarSecondaryBtn} shrink-0 no-underline`}
                       >
                         下载到本机
                       </a>
@@ -3124,9 +3254,9 @@ export function PersonStudioWorkspace() {
             {result.pipelinePending === "voiceover" ? (
               <div className="p-5 sm:p-6">
                 <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-4 py-6 text-center text-sm text-zinc-400">
-                  尚未生成整稿口播。请点击上方工具栏「
+                  尚未生成整稿口播。请点击本区顶部工具栏「
                   <span className="text-amber-200/90">生成整稿口播（L2）</span>
-                  」，或在本页底部主按钮执行同一步骤。
+                  」（豆包试听左侧）生成口播稿。
                 </div>
               </div>
             ) : voiceoverDraftPanelExpanded ?
@@ -3135,7 +3265,7 @@ export function PersonStudioWorkspace() {
                 className="p-5 sm:p-6"
               >
                 <p className="mb-3 text-[12px] leading-relaxed text-zinc-500">
-                  以下为当前口播稿。修改后可「AI 润色」、「豆包语音试听」（上方选音色；
+                  以下为当前口播稿。修改后可「豆包语音试听」（上方选音色；
                   服务端需配置 VOLCENGINE_TTS_*），再点击右侧「
                   {result.pipelinePending === "scenes" ?
                     "生成分镜与画面稿"
@@ -3162,7 +3292,7 @@ export function PersonStudioWorkspace() {
                 当前仅有 L1（黄金开头、时间线、分镜骨架），整稿口播待生成。
               </p>
               <p className="mt-2 text-[12px] leading-relaxed text-sky-100/75">
-                使用上方「生成整稿口播（L2）」或页面底部主按钮，完成后再编辑、润色与扩写分镜。
+                使用整稿口播区顶部「生成整稿口播（L2）」（在豆包试听左侧），完成后再编辑并扩写分镜。
               </p>
             </section>
           ) : null}
@@ -3173,7 +3303,7 @@ export function PersonStudioWorkspace() {
                 当前已有整稿口播，尚未生成分镜表（L3）。
               </p>
               <p className="mt-2 text-[12px] leading-relaxed text-amber-100/70">
-                确认口播后可「AI 润色」或「豆包语音试听」（配置火山 TTS
+                确认口播后可「豆包语音试听」（配置火山 TTS
                 后），再点击整稿区「生成分镜与画面稿」；完成后下方会出现分镜表与出图入口。
               </p>
             </section>
@@ -3186,7 +3316,7 @@ export function PersonStudioWorkspace() {
                 className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-amber-500/25 to-transparent"
                 aria-hidden
               />
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
+              <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
                 <div className="min-w-0 flex-1">
                   <p className={sectionLabelClass}>分镜扩写（L3）</p>
                   <h2 className="mt-1 font-display text-lg font-semibold tracking-tight text-amber-50/95 sm:text-xl">
@@ -3211,7 +3341,7 @@ export function PersonStudioWorkspace() {
                     </p>
                   ) : null}
                 </div>
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-xl border border-zinc-800/60 bg-zinc-950/55 p-2.5 shadow-inner shadow-black/30 ring-1 ring-zinc-800/30 lg:max-w-[min(100%,42rem)] lg:flex-[1.15] lg:justify-end">
+                <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
                   <button
                     type="button"
                     disabled={
@@ -3285,6 +3415,8 @@ export function PersonStudioWorkspace() {
                       type="button"
                       onClick={() => {
                         stopBatchRef.current = true;
+                        batchAssetAbortRef.current?.abort();
+                        setBatchBusy(false);
                       }}
                       className={storyboardBatchToolbarStopBtn}
                     >
@@ -3338,7 +3470,7 @@ export function PersonStudioWorkspace() {
                       ) : row?.status === "success" ? (
                         <span className={badgeSuccess}>已出图</span>
                       ) : row?.status === "failed" ? (
-                        <span className={badgeFail} title={row.error}>
+                        <span className={badgeFail} title={row?.error}>
                           失败
                         </span>
                       ) : (
@@ -3407,9 +3539,6 @@ export function PersonStudioWorkspace() {
                         </td>
                         <td className="py-4 pr-3 align-top text-zinc-300">
                           <div className="rounded-xl border border-zinc-800/65 bg-gradient-to-b from-zinc-950/55 to-zinc-950/30 p-3 ring-1 ring-zinc-800/40">
-                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
-                              画面描述
-                            </p>
                             <p className="max-w-md text-[13px] leading-relaxed whitespace-pre-wrap text-zinc-300/95">
                               {s.visualDescription}
                             </p>
@@ -3424,18 +3553,11 @@ export function PersonStudioWorkspace() {
                                   className="aspect-[9/16] max-h-44 w-full object-cover object-center"
                                 />
                               </div>
-                            ) : (
-                              <p className="mt-1 text-[11px] leading-relaxed text-zinc-600">
-                                尚未出图，无预览
-                              </p>
-                            )}
+                            ) : null}
                           </div>
                         </td>
                         <td className="py-4 pr-3 align-top">
                           <div className="rounded-xl border border-zinc-800/65 bg-gradient-to-b from-zinc-950/55 to-zinc-950/30 p-3 ring-1 ring-zinc-800/40">
-                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
-                              口播
-                            </p>
                             <p className="text-[13px] leading-relaxed text-zinc-300/95">
                               {s.narration}
                             </p>
@@ -3449,7 +3571,7 @@ export function PersonStudioWorkspace() {
                                   type="button"
                                   disabled={row?.status === "running"}
                                   title={
-                                    "优先以上一镜成片为参考（支持图生图时）；上一镜尚未出图则用封面底图。与顶部「按上一镜批量」单镜逻辑一致。"
+                                    "与顶部「按上一镜批量」同一规则：优先以上一镜成片为参考（支持图生图时）；上一镜尚未出图则用封面底图。"
                                   }
                                   className={storyboardOpPrimaryBtn}
                                   onClick={() => {
@@ -3474,7 +3596,7 @@ export function PersonStudioWorkspace() {
                                     );
                                   }}
                                 >
-                                  带参考出图
+                                  按上一镜出图
                                 </button>
                                 <button
                                   type="button"
@@ -3568,7 +3690,7 @@ export function PersonStudioWorkspace() {
                               title={
                                 !volcTtsEffectiveVoiceType.trim() ?
                                   "请先在整稿口播区上方选择豆包音色"
-                                : "读本镜旁白，火山豆包 TTS 合成并写入 slice-exports（fileStem 与本镜静帧一致）"
+                                : "读本镜旁白，火山豆包 TTS 合成并写入 slice-exports（fileStem：…-scene-audio-镜号）"
                               }
                               className={storyboardOpTtsBtn}
                               onClick={() =>
@@ -3601,32 +3723,6 @@ export function PersonStudioWorkspace() {
                                 "Seedance…"
                               : "Seedance 文案"}
                             </button>
-                            {row?.status === "success" && row.url ? (
-                              <>
-                                <div className={storyboardOpDivider} />
-                                <button
-                                  type="button"
-                                  disabled={
-                                    !subject.trim() ||
-                                    sliceSaveBusy === `scene-${s.index}`
-                                  }
-                                  onClick={() =>
-                                    void saveSliceImageToProject(
-                                      row.url as string,
-                                      {
-                                        role: "scene",
-                                        sceneIndex: s.index,
-                                      },
-                                    )
-                                  }
-                                  className={storyboardOpSaveBtn}
-                                >
-                                  {sliceSaveBusy === `scene-${s.index}` ?
-                                    "保存中…"
-                                  : "保存图片"}
-                                </button>
-                              </>
-                            ) : null}
                           </div>
                         </td>
                       </tr>

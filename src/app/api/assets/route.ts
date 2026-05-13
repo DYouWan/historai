@@ -191,7 +191,7 @@ export async function POST(req: Request) {
       }),
     });
     return NextResponse.json(
-      { error: message },
+      { error: "生成失败" },
       { status: 500, headers: jsonHeaders },
     );
   }

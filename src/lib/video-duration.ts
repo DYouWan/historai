@@ -1,30 +1,60 @@
 import type { VideoDurationMin } from "@/lib/types";
 
-/** 界面「叙事时长」与主生成硬约束（镜数、总秒数、timeline 段数等） */
+/**
+ * 界面「叙事时长」每一档对应的成片体量参数（镜数、总秒数、timeline、单镜时长等）。
+ * 具体含义见各字段注释；档位数据见 {@link VIDEO_DURATION_PRESETS}。
+ */
 export interface VideoDurationPreset {
+  /** 与 UI / {@link VideoDurationMin} 一致的档位键（成片目标分钟数） */
   minutes: VideoDurationMin;
-  /** 用于 system / 用户提示的短标签 */
+  /** 写入提示词的体量短标签，如「约 1 分钟」 */
   labelShort: string;
+  /** 分镜条数（镜数）推荐下限：叙事骨架 / 整稿 / 扩写时约束「大约多少镜」讲清切片 */
   minScenes: number;
+  /** 分镜条数（镜数）推荐上限 */
   maxScenes: number;
-  /** 「中段」至少连续递进镜数（不含首镜与收尾镜） */
+  /** 中段连续递进最少镜数（不含开篇与收尾若干镜），避免核心过程一笔带过 */
   midStreakMin: number;
+  /** 各镜 `durationSec` 之和的目标下限（秒） */
   minTotalSec: number;
+  /** 各镜 `durationSec` 之和的目标上限（秒） */
   maxTotalSec: number;
-  /** 本地补足时长：加总低于此则逐镜 +1s */
+  /**
+   * 总时长软下限（秒）：全片加总明显低于此时，本地可对各镜做温和补足（如逐镜 +1s），
+   * 见 `boostSceneDurationsIfShort`。
+   */
   softMinTotalSec: number;
+  /** `timeline` 数组段数的**服务端硬下限**；校验须 `length >= timelineMin` */
   timelineMin: number;
+  /**
+   * `timeline` 段数的**建议参考上限**（写入提示词，引导紧凑）；**不作为服务端上界**，
+   * 上界见 {@link TIMELINE_SEGMENTS_HARD_MAX}。
+   */
   timelineMax: number;
-  /** 「口播连贯」中禁止连堆隐喻的起算镜序（约） */
+  /** 口播「禁止从约本镜起连续多段只有隐喻」等规则的起算镜序（约） */
   metaphorFromSceneApprox: number;
+  /** 单镜时长居中参考（秒）：骨架示例默认值、口播字数与时长对齐的参照 */
   perSceneCenterSec: number;
+  /** 单镜 `durationSec` 允许下限（秒），与校验/提示一致 */
   perSceneMinSec: number;
+  /** 单镜 `durationSec` 允许上限（秒），与校验/提示一致 */
   perSceneMaxSec: number;
+  /** 单镜秒数允许范围的展示文案（写入提示词），如「5～10」 */
   perSceneRangeLabel: string;
+  /** 单镜「更推荐」的秒数区间文案（写入提示词），如「6～9」，引导少贴下限糊弄 */
   perScenePreferredLabel: string;
+  /** 视为「过短镜」的秒数阈值；提示中写避免大量使用低于此值的时长 */
   shortSceneWarnBelow: number;
 }
 
+/**
+ * `timeline` 段数绝对上限（防模型输出失控过长 JSON）。
+ * 校验规则：`timeline.length` 须 **≥** 当前档位 {@link VideoDurationPreset.timelineMin}，
+ * 且 **≤** 本常量；档位 {@link VideoDurationPreset.timelineMax} 仅作提示建议，不卡上界。
+ */
+export const TIMELINE_SEGMENTS_HARD_MAX = 32;
+
+/** 各叙事时长档位 → 体量参数；键与 {@link VideoDurationPreset.minutes} 一致 */
 export const VIDEO_DURATION_PRESETS: Record<
   VideoDurationMin,
   VideoDurationPreset

@@ -36,6 +36,8 @@ export async function generateWithTextLlm(params: {
   stopAfterSpine?: boolean;
   /** 在已有叙事骨架快照上仅跑 L2 */
   generateVoiceoverOnly?: boolean;
+  /** 与 `/api/generate` 响应头一致；L1 解析失败时写入 `.llm-read.md` */
+  llmRequestId?: string;
 }): Promise<{ result: GenerationResult; promptDebug: LlmMessagesDebug }> {
   const file = loadLlmProfilesFile();
   const profile = pickProfile(file, params.profileId);
@@ -77,5 +79,6 @@ export async function generateWithTextLlm(params: {
     stopAfterVoiceover: params.stopAfterVoiceover === true,
     stopAfterSpine: params.stopAfterSpine === true,
     generateVoiceoverOnly: params.generateVoiceoverOnly === true,
+    llmRequestId: params.llmRequestId,
   });
 }

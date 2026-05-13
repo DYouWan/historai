@@ -45,6 +45,8 @@ type ExportBody = {
   >;
   /** 为 true 时忽略本地已有静帧，从当前 URL 再拉取并写入下一序号文件 */
   forceImageRefresh?: boolean;
+  /** 整稿口播全文；优先于 result.voiceoverFullText（界面改稿） */
+  voiceoverFullText?: string | null;
 };
 
 const posix = (p: string) => p.split(path.sep).join("/");
@@ -134,6 +136,10 @@ export async function POST(req: Request) {
         body.coverStillUrl.trim()
       : null,
     assets: body.assets ?? {},
+    voiceoverFullText:
+      typeof body.voiceoverFullText === "string" ?
+        body.voiceoverFullText
+      : undefined,
   });
 
   const folderName = exportFolder;
@@ -212,7 +218,7 @@ export async function POST(req: Request) {
 
     const seed = manifest.projectSeed.trim();
     for (const scene of manifest.scenes) {
-      const stem = `${seed}-scene-${String(scene.index).padStart(2, "0")}`;
+      const stem = `${seed}-scene-audio-${String(scene.index).padStart(2, "0")}`;
       await syncSceneAudioCandidates(
         cwd,
         folderName,

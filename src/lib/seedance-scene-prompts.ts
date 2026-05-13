@@ -1,5 +1,6 @@
 import { callOpenAICompatibleChat } from "@/lib/chat-openai-compatible";
 import type { LlmProfileRow } from "@/lib/llm-profiles";
+import { appendLlmDebugLog } from "@/lib/llm-request-logger";
 import { resolveChunkMaxTokens } from "@/lib/storyboard-llm-budget";
 
 export type SeedancePromptSceneInput = {
@@ -94,6 +95,8 @@ export async function generateSeedancePromptsWithProfile(args: {
   sliceTitle?: string;
   sliceAngle?: string;
   hook?: string;
+  /** 与 `POST /api/suggest-seedance-prompts` 响应头一致，写入 `.llm-read.md` */
+  llmRequestId?: string;
 }): Promise<SeedancePromptSceneOutput[]> {
   const usesJson = args.profile.supportsJsonObject !== false;
   const cap = resolveChunkMaxTokens(args.profile);
@@ -138,21 +141,92 @@ export async function generateSeedancePromptsWithProfile(args: {
       Math.max(4096, 1800 + batch.length * 950),
     );
 
-    const raw = await callOpenAICompatibleChat({
-      url: args.profile.chatCompletionsUrl,
-      apiKey: args.apiKey,
-      model: args.profile.model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.45,
-      maxTokens,
-      responseFormatJsonObject: usesJson,
-    });
+    let raw: string;
+    try {
+      raw = await callOpenAICompatibleChat({
+        url: args.profile.chatCompletionsUrl,
+        apiKey: args.apiKey,
+        model: args.profile.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.45,
+        maxTokens,
+        responseFormatJsonObject: usesJson,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await appendLlmDebugLog({
+        requestId: args.llmRequestId,
+        route: "POST /api/suggest-seedance-prompts",
+        meta: {
+          phase: "chat_failed",
+          batchOffset: off,
+          sceneIndices: expectedIndices,
+          error: msg,
+        },
+        promptDebug: {
+          system,
+          user,
+          model: args.profile.model,
+          chatCompletionsUrl: args.profile.chatCompletionsUrl.trim(),
+          temperature: 0.45,
+          usesJsonResponseFormat: usesJson,
+          assistantRaw: msg,
+          storyboardStrategy: `Seedance · Chat 请求失败 · 镜 ${expectedIndices.join("、")}`,
+        },
+      });
+      throw e;
+    }
 
-    const part = coerceOutputs(parseJson(raw), expectedIndices);
-    merged.push(...part);
+    try {
+      const part = coerceOutputs(parseJson(raw), expectedIndices);
+      merged.push(...part);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await appendLlmDebugLog({
+        requestId: args.llmRequestId,
+        route: "POST /api/suggest-seedance-prompts",
+        meta: {
+          phase: "parse_failed",
+          batchOffset: off,
+          sceneIndices: expectedIndices,
+          error: msg,
+        },
+        promptDebug: {
+          system,
+          user,
+          model: args.profile.model,
+          chatCompletionsUrl: args.profile.chatCompletionsUrl.trim(),
+          temperature: 0.45,
+          usesJsonResponseFormat: usesJson,
+          assistantRaw: raw,
+          storyboardStrategy: `Seedance · JSON/字段校验失败 · 镜 ${expectedIndices.join("、")}`,
+        },
+      });
+      throw e;
+    }
+
+    await appendLlmDebugLog({
+      requestId: args.llmRequestId,
+      route: "POST /api/suggest-seedance-prompts",
+      meta: {
+        phase: "ok",
+        batchOffset: off,
+        sceneIndices: expectedIndices,
+      },
+      promptDebug: {
+        system,
+        user,
+        model: args.profile.model,
+        chatCompletionsUrl: args.profile.chatCompletionsUrl.trim(),
+        temperature: 0.45,
+        usesJsonResponseFormat: usesJson,
+        assistantRaw: raw,
+        storyboardStrategy: `Seedance 文案 · 批次成功 · 镜 ${expectedIndices.join("、")}`,
+      },
+    });
   }
 
   return merged.sort((a, b) => a.index - b.index);

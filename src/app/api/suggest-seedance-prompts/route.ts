@@ -1,4 +1,10 @@
 import {
+  appendLlmDebugLog,
+  buildImageGenerationPromptDebug,
+  createLlmRequestId,
+  llmRequestIdHeaders,
+} from "@/lib/llm-request-logger";
+import {
   loadLlmProfilesFile,
   pickProfile,
   resolveApiKeyForProfile,
@@ -12,6 +18,8 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
+  const requestId = createLlmRequestId();
+  const jsonHeaders = llmRequestIdHeaders(requestId);
   try {
     const body = (await req.json()) as {
       profileId?: string;
@@ -27,12 +35,15 @@ export async function POST(req: Request) {
     if (!body.subject?.trim()) {
       return NextResponse.json(
         { error: "请填写主角（人物）" },
-        { status: 400 },
+        { status: 400, headers: jsonHeaders },
       );
     }
     const scenes = Array.isArray(body.scenes) ? body.scenes : [];
     if (!scenes.length) {
-      return NextResponse.json({ error: "scenes 不能为空" }, { status: 400 });
+      return NextResponse.json(
+        { error: "scenes 不能为空" },
+        { status: 400, headers: jsonHeaders },
+      );
     }
     for (const s of scenes) {
       if (
@@ -42,7 +53,7 @@ export async function POST(req: Request) {
       ) {
         return NextResponse.json(
           { error: "每条 scene 须含 index 与非空 visualDescription" },
-          { status: 400 },
+          { status: 400, headers: jsonHeaders },
         );
       }
     }
@@ -73,12 +84,22 @@ export async function POST(req: Request) {
       sliceTitle: body.sliceTitle?.trim() || undefined,
       sliceAngle: body.sliceAngle?.trim() || undefined,
       hook: body.hook?.trim() || undefined,
+      llmRequestId: requestId,
     });
 
-    return NextResponse.json({ prompts });
+    return NextResponse.json({ prompts }, { headers: jsonHeaders });
   } catch (e) {
     const message =
       e instanceof Error ? e.message : "Seedance 文案生成失败";
-    return NextResponse.json({ error: message }, { status: 500 });
+    await appendLlmDebugLog({
+      requestId,
+      route: "POST /api/suggest-seedance-prompts",
+      meta: { phase: "handler_error", error: message },
+      promptDebug: buildImageGenerationPromptDebug({ error: message }),
+    });
+    return NextResponse.json(
+      { error: message },
+      { status: 500, headers: jsonHeaders },
+    );
   }
 }

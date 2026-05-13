@@ -1,10 +1,19 @@
 import {
+  appendLlmDebugLog,
+  buildImageGenerationPromptDebug,
+  createLlmRequestId,
+  llmRequestIdHeaders,
+} from "@/lib/llm-request-logger";
+import { sanitizeRemoteAssetHint } from "@/lib/media-request-logger";
+import {
   buildSliceExportFolderName,
   saveRemoteFileToSliceExports,
 } from "@/lib/slice-export-fs";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+/** 拉取远程静帧可能较慢或多轮重试；部署到 Vercel 等时可避免 10s 默认上限 */
+export const maxDuration = 120;
 
 type Body = {
   imageUrl?: string;
@@ -16,11 +25,17 @@ type Body = {
 };
 
 export async function POST(req: Request) {
+  const requestId = createLlmRequestId();
+  const jsonHeaders = llmRequestIdHeaders(requestId);
+
   let body: Body;
   try {
     body = (await req.json()) as Body;
   } catch {
-    return NextResponse.json({ error: "请求体须为 JSON" }, { status: 400 });
+    return NextResponse.json(
+      { error: "请求体须为 JSON" },
+      { status: 400, headers: jsonHeaders },
+    );
   }
 
   const imageUrl = String(body.imageUrl ?? "").trim();
@@ -36,13 +51,13 @@ export async function POST(req: Request) {
   if (!imageUrl.startsWith("http://") && !imageUrl.startsWith("https://")) {
     return NextResponse.json(
       { error: "仅支持 http(s) 图片地址" },
-      { status: 400 },
+      { status: 400, headers: jsonHeaders },
     );
   }
   if (!subject) {
     return NextResponse.json(
       { error: "缺少主角（人物）名称，无法创建文件夹" },
-      { status: 400 },
+      { status: 400, headers: jsonHeaders },
     );
   }
 
@@ -53,7 +68,7 @@ export async function POST(req: Request) {
       stemFromClient
     : role === "cover" ?
       "cover"
-    : `scene-${String(sceneIndex).padStart(2, "0")}`;
+    : `scene-img-${String(sceneIndex).padStart(2, "0")}`;
 
   try {
     const { relativePath } = await saveRemoteFileToSliceExports({
@@ -63,13 +78,36 @@ export async function POST(req: Request) {
       url: imageUrl,
     });
 
-    return NextResponse.json({
-      ok: true,
-      relativePath,
-      folder: `slice-exports/${folderName}`,
-    });
+    return NextResponse.json(
+      {
+        ok: true,
+        relativePath,
+        folder: `slice-exports/${folderName}`,
+      },
+      { headers: jsonHeaders },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : "保存失败";
-    return NextResponse.json({ error: message }, { status: 500 });
+    await appendLlmDebugLog({
+      requestId,
+      route: "POST /api/save-slice-image",
+      meta: {
+        phase: "save_remote",
+        folderName,
+        baseName,
+        role,
+        sceneIndex,
+        imageUrlHint: sanitizeRemoteAssetHint(imageUrl),
+        error: message,
+      },
+      promptDebug: buildImageGenerationPromptDebug({
+        error: message,
+        promptSummary: `${folderName} / ${baseName}`,
+      }),
+    });
+    return NextResponse.json(
+      { error: message },
+      { status: 500, headers: jsonHeaders },
+    );
   }
 }

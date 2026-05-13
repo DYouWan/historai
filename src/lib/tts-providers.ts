@@ -61,15 +61,82 @@ function volcengineResourceDeniedHint(apiMessage: string): string {
   );
 }
 
-export async function synthesizeVolcengineTts(
-  params: VolcengineTtsParams,
+/**
+ * 火山 HTTP 非流式单次 `text` 有 UTF-8 字节上限（官方约 1024 字节），超长会报 exceed max len limit。
+ * 保守按块切分；可用 VOLCENGINE_TTS_MAX_CHUNK_UTF8_BYTES 覆盖（≤1024）。
+ */
+function volcengineHttpTtsChunkUtf8Bytes(): number {
+  const raw = process.env.VOLCENGINE_TTS_MAX_CHUNK_UTF8_BYTES?.trim();
+  if (!raw) return 1000;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 64) return 1000;
+  return Math.min(n, 1024);
+}
+
+/**
+ * 将长文本切成多段，每段 UTF-8 字节数不超过 maxBytes；优先在换行处断开。
+ */
+function splitUtf8TextForVolcengineHttpTts(
+  text: string,
+  maxBytes: number,
+): string[] {
+  const buf = Buffer.from(text.trim(), "utf8");
+  if (!buf.length) return [];
+  if (buf.length <= maxBytes) {
+    const one = buf.toString("utf8").trim();
+    return one ? [one] : [];
+  }
+
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < buf.length) {
+    let end = Math.min(offset + maxBytes, buf.length);
+    if (end < buf.length) {
+      const minBreak = offset + 48;
+      let nl = -1;
+      for (let p = end - 1; p >= minBreak; p--) {
+        if (buf[p] === 0x0a) {
+          nl = p;
+          break;
+        }
+      }
+      if (nl > offset) {
+        end = nl;
+      } else {
+        while (end > offset && (buf[end] & 0xc0) === 0x80) {
+          end--;
+        }
+        if (end === offset) {
+          end = Math.min(offset + maxBytes, buf.length);
+          while (end > offset && (buf[end] & 0xc0) === 0x80) {
+            end--;
+          }
+        }
+      }
+    }
+
+    const piece = buf.subarray(offset, end).toString("utf8").trim();
+    if (piece) chunks.push(piece);
+    offset = end;
+    while (
+      offset < buf.length &&
+      (buf[offset] === 0x0a || buf[offset] === 0x0d || buf[offset] === 0x20)
+    ) {
+      offset++;
+    }
+  }
+  return chunks;
+}
+
+async function synthesizeVolcengineTtsOnce(
+  params: VolcengineTtsParams & { text: string },
 ): Promise<{ buffer: Buffer; mimeType: TtsMimeType }> {
   const token = params.accessToken.trim();
   const appId = params.appId.trim();
+  const text = params.text.trim();
   if (!token || !appId) {
     throw new Error("火山 TTS：缺少 accessToken 或 appId");
   }
-  const text = params.text.trim();
   if (!text) throw new Error("火山 TTS：文本为空");
 
   const cluster = params.cluster?.trim() || "volcano_tts";
@@ -144,6 +211,42 @@ export async function synthesizeVolcengineTts(
   const mimeType: TtsMimeType =
     encoding === "mp3" ? "audio/mpeg" : "application/octet-stream";
   return { buffer, mimeType };
+}
+
+export async function synthesizeVolcengineTts(
+  params: VolcengineTtsParams,
+): Promise<{ buffer: Buffer; mimeType: TtsMimeType }> {
+  const token = params.accessToken.trim();
+  const appId = params.appId.trim();
+  if (!token || !appId) {
+    throw new Error("火山 TTS：缺少 accessToken 或 appId");
+  }
+  const text = params.text.trim();
+  if (!text) throw new Error("火山 TTS：文本为空");
+
+  const encoding = params.encoding ?? "mp3";
+  const maxBytes = volcengineHttpTtsChunkUtf8Bytes();
+  const chunks = splitUtf8TextForVolcengineHttpTts(text, maxBytes);
+  if (!chunks.length) throw new Error("火山 TTS：文本为空");
+
+  if (encoding !== "mp3" && chunks.length > 1) {
+    throw new Error(
+      "火山 TTS：当前编码下长文本仅支持 mp3 分段拼接，请将 encoding 设为 mp3 或缩短单次文本",
+    );
+  }
+
+  if (chunks.length === 1) {
+    return synthesizeVolcengineTtsOnce({ ...params, text: chunks[0] });
+  }
+
+  const parts: Buffer[] = [];
+  let mime: TtsMimeType = "audio/mpeg";
+  for (const chunk of chunks) {
+    const r = await synthesizeVolcengineTtsOnce({ ...params, text: chunk });
+    parts.push(r.buffer);
+    mime = r.mimeType;
+  }
+  return { buffer: Buffer.concat(parts), mimeType: mime };
 }
 
 function buildIflytekWsUrl(apiKey: string, apiSecret: string): string {

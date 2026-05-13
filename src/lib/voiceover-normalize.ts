@@ -1,7 +1,7 @@
 /**
- * L2 整稿口播 / 润色接口共用：从模型 JSON 得到 voiceoverFullText + paragraphs。
- * 优先以 voiceoverFullText 按双换行切成恰好 N 段为唯一真源（连贯长稿），保证全文与分段一致。
- * 若模型少切/多切 1～3 段，尽力自动合并或拆分，避免整稿因离散文本失败。
+ * L2 整稿口播：从模型 JSON 得到 voiceoverFullText + voiceoverParagraphs。
+ * **优先** `paragraphs`（恰好 N 条）：服务端用 `\n\n` 拼接为 `voiceoverFullText`。
+ * 若仅提供 `voiceoverFullText`，则按双换行切分为段；少切/多切 1～3 段时尽力合并或拆分。
  */
 
 const MAX_SEGMENT_DRIFT = 3;
@@ -103,10 +103,6 @@ export function normalizeVoiceoverPayload(
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
-  if (splitFromFull.length === targetScenes) {
-    return finalize(splitFromFull);
-  }
-
   if (paragraphsRaw.length === targetScenes) {
     return finalize(paragraphsRaw);
   }
@@ -114,6 +110,10 @@ export function normalizeVoiceoverPayload(
   const repairedParagraphs = repairSegmentCount(paragraphsRaw, targetScenes);
   if (repairedParagraphs !== null) {
     return finalize(repairedParagraphs);
+  }
+
+  if (splitFromFull.length === targetScenes) {
+    return finalize(splitFromFull);
   }
 
   const repairedFromFull = repairSegmentCount(splitFromFull, targetScenes);
@@ -129,11 +129,11 @@ export function normalizeVoiceoverPayload(
 
   if (splitFromFull.length > 0) {
     throw new Error(
-      `${label}：voiceoverFullText 用空行分段后为 ${splitFromFull.length} 段，须 ${targetScenes} 段（相差超过 ${MAX_SEGMENT_DRIFT} 时无法自动修正）；且未提供可匹配的 paragraphs。`,
+      `${label}：voiceoverFullText 用空行分段后为 ${splitFromFull.length} 段，须 ${targetScenes} 段（相差超过 ${MAX_SEGMENT_DRIFT} 条时无法自动修正）；且 paragraphs 无法修正到目标条数。`,
     );
   }
 
   throw new Error(
-    `${label}：须提供 voiceoverFullText（镜间双换行分段）或 paragraphs，且段数须为 ${targetScenes}（或可自动修正的偏离 ≤ ${MAX_SEGMENT_DRIFT}）。`,
+    `${label}：请提供 **paragraphs**（字符串数组，恰好 ${targetScenes} 条，按镜序）；或提供 voiceoverFullText（镜间双换行分段，可自动修正的偏离须 ≤ ${MAX_SEGMENT_DRIFT}）。`,
   );
 }

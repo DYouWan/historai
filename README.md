@@ -42,7 +42,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 | `DASHSCOPE_API_KEY` | 通义千问 / 阿里云文生图 |
 | `ARK_API_KEY` | 火山引擎 Seedream 等文生图 |
 | `OPENAI_API_KEY` | OpenAI DALL·E 3 文生图 |
-| — | 「按参考图重生」参考图由服务端代理上传到 [Remit.ee](https://img.remit.ee/#upload)，无需额外环境变量 |
+| `VOLCENGINE_TOS_*` | 「上传封面图」「按参考图重生」经服务端写入火山 TOS；变量说明见 `src/lib/tos-reference-upload.ts` |
 
 文本模型和媒体模型的档案配置分别在 `llm-profiles.json` 和 `media-profiles.json` 中管理。
 
