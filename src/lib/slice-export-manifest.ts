@@ -1,5 +1,6 @@
 import type { StoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { buildSliceExportFolderName } from "@/lib/slice-export-fs";
+import type { SeedancePromptSceneOutput } from "@/lib/seedance-scene-prompts";
 import type {
   GenerationResult,
   StylePreset,
@@ -171,4 +172,61 @@ export function buildSliceExportBundlePayload(params: {
   };
 
   return { manifest, exportFolder, downloads };
+}
+
+export const SEEDANCE_SCENE_EXPORT_VERSION = 1 as const;
+
+export type SliceExportSeedanceScenePromptsV1 = {
+  exportVersion: typeof SEEDANCE_SCENE_EXPORT_VERSION;
+  generatedAt: string;
+  exportFolder: string;
+  relativeRoot: string;
+  projectSeed: string;
+  notes: string;
+  scenes: SeedancePromptSceneOutput[];
+};
+
+const SEEDANCE_SCENE_EXPORT_NOTES =
+  "HistorAI 导出的各镜 Seedance 图生视频分析与优化提示词；index 为分镜镜号，与 manifest.json 中 scenes 及静帧 stem 对应。";
+
+/** 校验并规范化客户端 POST 的 Seedance 条目；无效或空数组返回 null。 */
+export function coerceSeedanceScenePromptsFromClientBody(
+  raw: unknown,
+): SeedancePromptSceneOutput[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const out: SeedancePromptSceneOutput[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const index = Number(r.index);
+    if (!Number.isFinite(index)) continue;
+    out.push({
+      index,
+      adaptationFit: String(r.adaptationFit ?? "").trim(),
+      officialTemplateNotes: String(r.officialTemplateNotes ?? "").trim(),
+      suggestions: String(r.suggestions ?? "").trim(),
+      optimizedPrompt: String(r.optimizedPrompt ?? "").trim(),
+    });
+  }
+  if (!out.length) return null;
+  out.sort((a, b) => a.index - b.index);
+  return out;
+}
+
+export function buildSeedanceScenePromptsExportDocument(params: {
+  generatedAt: string;
+  exportFolder: string;
+  relativeRoot: string;
+  projectSeed: string;
+  scenes: SeedancePromptSceneOutput[];
+}): SliceExportSeedanceScenePromptsV1 {
+  return {
+    exportVersion: SEEDANCE_SCENE_EXPORT_VERSION,
+    generatedAt: params.generatedAt,
+    exportFolder: params.exportFolder,
+    relativeRoot: params.relativeRoot,
+    projectSeed: params.projectSeed.trim(),
+    notes: SEEDANCE_SCENE_EXPORT_NOTES,
+    scenes: [...params.scenes].sort((a, b) => a.index - b.index),
+  };
 }

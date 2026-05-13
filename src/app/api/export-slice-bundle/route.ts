@@ -8,7 +8,9 @@ import {
   SLICE_EXPORT_ROOT,
 } from "@/lib/slice-export-fs";
 import {
+  buildSeedanceScenePromptsExportDocument,
   buildSliceExportBundlePayload,
+  coerceSeedanceScenePromptsFromClientBody,
   type SliceExportManifestV1,
 } from "@/lib/slice-export-manifest";
 import type {
@@ -47,6 +49,8 @@ type ExportBody = {
   forceImageRefresh?: boolean;
   /** 整稿口播全文；优先于 result.voiceoverFullText（界面改稿） */
   voiceoverFullText?: string | null;
+  /** 各镜 Seedance 文案；非空时额外写入 seedance-scene-prompts.json */
+  seedanceScenePrompts?: unknown;
 };
 
 const posix = (p: string) => p.split(path.sep).join("/");
@@ -237,11 +241,34 @@ export async function POST(req: Request) {
     const manifestRel = posix(path.relative(cwd, manifestPath));
     saved.push(manifestRel);
 
+    let seedancePromptsRel: string | null = null;
+    const seedanceScenes = coerceSeedanceScenePromptsFromClientBody(
+      body.seedanceScenePrompts,
+    );
+    if (seedanceScenes?.length) {
+      const seedanceDoc = buildSeedanceScenePromptsExportDocument({
+        generatedAt: manifest.generatedAt,
+        exportFolder: manifest.exportFolder,
+        relativeRoot: manifest.relativeRoot,
+        projectSeed: manifest.projectSeed,
+        scenes: seedanceScenes,
+      });
+      const seedancePath = path.join(dir, "seedance-scene-prompts.json");
+      await writeFile(
+        seedancePath,
+        `${JSON.stringify(seedanceDoc, null, 2)}\n`,
+        "utf-8",
+      );
+      seedancePromptsRel = posix(path.relative(cwd, seedancePath));
+      saved.push(seedancePromptsRel);
+    }
+
     return NextResponse.json({
       ok: true,
       exportFolder,
       relativeRoot: manifest.relativeRoot,
       manifestPath: manifestRel,
+      seedancePromptsPath: seedancePromptsRel,
       saved,
       incremental: true,
       errors: errors.length ? errors : undefined,

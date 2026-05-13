@@ -849,6 +849,12 @@ export function PersonStudioWorkspace() {
     setExportBundleBusy(true);
     setSliceSaveHint(null);
     try {
+      const seedanceScenePrompts =
+        Object.keys(seedancePromptByIndex).length > 0 ?
+          Object.values(seedancePromptByIndex).sort(
+            (a, b) => a.index - b.index,
+          )
+        : undefined;
       const res = await fetch("/api/export-slice-bundle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -877,11 +883,16 @@ export function PersonStudioWorkspace() {
           ),
           voiceoverFullText:
             voiceoverDraft.trim() || result?.voiceoverFullText?.trim() || undefined,
+          ...(seedanceScenePrompts?.length ?
+            { seedanceScenePrompts }
+          : {}),
         }),
       });
       const json = (await res.json()) as {
         error?: string;
         manifestPath?: string;
+        seedancePromptsPath?: string | null;
+        exportFolder?: string;
         saved?: string[];
         errors?: string[];
       };
@@ -889,6 +900,13 @@ export function PersonStudioWorkspace() {
         setSliceSaveHint(json.error ?? "导出失败");
         return;
       }
+      const hintParts = [`manifest：${json.manifestPath ?? "manifest.json"}`];
+      if (json.seedancePromptsPath) {
+        hintParts.push(`Seedance：${json.seedancePromptsPath}`);
+      }
+      setSliceSaveHint(
+        `已写入 slice-exports/${json.exportFolder ?? ""}（${hintParts.join("；")}）`,
+      );
     } catch (e) {
       setSliceSaveHint(e instanceof Error ? e.message : "导出失败");
     } finally {
@@ -910,6 +928,7 @@ export function PersonStudioWorkspace() {
     latestCoverUrl,
     assets,
     voiceoverDraft,
+    seedancePromptByIndex,
   ]);
 
   const sceneAudioStem = useCallback(
