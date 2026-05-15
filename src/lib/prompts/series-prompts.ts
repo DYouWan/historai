@@ -102,8 +102,3 @@ export function themeAxisHintForSeries(seriesTitle: string): string | undefined 
   const row = THEME_DEFINITIONS.find((d) => d.title === t);
   return row?.axisHint;
 }
-
-export {
-  themeBuiltInCharacters,
-  themeBuiltInSlices,
-} from "@/lib/data/series-built-in-picks";

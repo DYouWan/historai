@@ -1,8 +1,7 @@
 import type { ImageProfileDriver } from "@/lib/media-profiles";
 import {
   anchorSubjectLabelForImage,
-  buildCoverBaseOnlyPromptSnippet,
-  buildCoverReferenceFigureIntro,
+  buildPortraitCoverPromptSnippet,
   buildDynastyLineBackground,
   buildDynastyLineNarrative,
   buildDynastyLineShort,
@@ -18,7 +17,6 @@ import {
   IMAGE_SCENE_CAST_HINT,
   IMAGE_TEXT_ONLY_FACE_HINT,
   narrationCoherenceSnippet,
-  standaloneCoverVisualGuide,
 } from "@/lib/prompts/image-coherence-prompts";
 import { STYLE_ANCHOR_ZH, STYLE_SNIPPET } from "@/lib/prompts/image-prompts";
 import type { StylePreset } from "@/lib/types";
@@ -41,7 +39,7 @@ export type ImageCoherencePlan = {
 };
 
 /**
- * - **standaloneCover**：仅外宣封面底图（切片意象），与正片镜 1 脱钩；提示词含人物居左、右侧留白供后期叠字。
+ * - **standaloneCover**：仅外宣封面图（切片意象），与正片镜 1 脱钩；提示词含人物居左、右侧留白供后期叠字。
  * - **sceneIndex === 1 且非独立封面**：正片首镜，用分镜 visual + 口播，不含切片封面大块。
  * - **sceneIndex > 1**：图生图或文生跟镜。
  */
@@ -58,6 +56,8 @@ export function planImageCoherencePrompt(args: {
   dynasty?: string | null;
   referenceImageUrl?: string | null;
   referenceRole?: "previous" | "cover" | null;
+  /** 独立封面：人物形象描述（与画风预设一并约束出图） */
+  subjectAppearance?: string | null;
   driver: ImageProfileDriver;
 }): ImageCoherencePlan {
   const name = anchorSubjectLabelForImage(args.subject);
@@ -75,34 +75,29 @@ export function planImageCoherencePrompt(args: {
   );
 
   if (args.standaloneCover) {
-    const coverBaseSnippet = buildCoverBaseOnlyPromptSnippet({
+    const appearanceRaw = args.subjectAppearance?.trim() ?? "";
+    const appearance =
+      appearanceRaw ||
+      `${anchorSubjectLabelForImage(args.subject)}，史书通行造型与衣冠气质，须具可辨识时代感。`;
+    const coverBaseSnippet = buildPortraitCoverPromptSnippet({
       subject: args.subject,
-      seriesTitle: args.seriesTitle,
-      sliceTitle: args.sliceTitle,
-      sliceAngle: args.sliceAngle,
+      subjectAppearance: appearance,
+      dynasty: args.dynasty,
+      stylePreset: style,
     });
-    const guide = standaloneCoverVisualGuide(args.stylePreset);
-    const hasRef =
-      Boolean(args.referenceImageUrl?.trim()) &&
-      driverSupportsReferenceImage(args.driver);
-    const refIntro = hasRef ? buildCoverReferenceFigureIntro() : "";
-
     const fullPrompt = [
-      buildStandaloneCoverLead(hasRef),
-      refIntro,
-      dynasty ? buildDynastyLineNarrative(dynasty) : "",
+      buildStandaloneCoverLead(false),
       coverBaseSnippet,
       `【造型锚点】${anchorZh}`,
       `【画风】${snippet}`,
-      guide,
     ]
       .filter(Boolean)
       .join("\n\n");
 
     return {
       sceneRole: "cover",
-      referenceRole: hasRef ? "cover" : null,
-      useReferenceImage: hasRef,
+      referenceRole: null,
+      useReferenceImage: false,
       fullPrompt,
     };
   }

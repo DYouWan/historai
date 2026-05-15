@@ -7,6 +7,7 @@ import {
   LlmNotConfiguredError,
   fetchCharacterSlices,
 } from "@/lib/theme-assist-llm";
+import { parseVideoDurationMin } from "@/lib/video-duration";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -19,6 +20,8 @@ export async function POST(req: Request) {
       seriesTitle?: string;
       characterName?: string;
       excludeSliceTitles?: unknown;
+      /** 成片目标时长（分钟），与创作中心「叙事时长」一致 */
+      videoDurationMin?: unknown;
     };
 
     const seriesTitle =
@@ -43,10 +46,13 @@ export async function POST(req: Request) {
           .slice(0, 40)
       : [];
 
+    const videoDurationMin = parseVideoDurationMin(body.videoDurationMin);
+
     const { suggestions, promptDebug } = await fetchCharacterSlices({
       profileId: body.profileId,
       seriesTitle,
       characterName: body.characterName.trim(),
+      videoDurationMin,
       ...(excludeTitles.length ? { excludeTitles } : {}),
     });
 
@@ -60,6 +66,7 @@ export async function POST(req: Request) {
         characterName: body.characterName.trim(),
         suggestionCount: suggestions.length,
         excludeTitleCount: excludeTitles.length,
+        videoDurationMin,
       },
     });
 

@@ -20,6 +20,8 @@ export type StoryboardPromptParams = {
   sliceAngle?: string;
   subject: string;
   dynasty?: string;
+  /** 主角视觉锚点（如 AI 推荐人物时的 appearance） */
+  subjectAppearance?: string;
   tone: Tone;
   stylePreset: string;
   videoDurationMin?: VideoDurationMin;
@@ -90,6 +92,7 @@ function buildThemeSliceDurationSubjectLines(
 
   const lead = `${themeBlock}${sliceBlock}${sliceRuleFallback}${durationBlock}主角/主题对象：${params.subject}
 朝代/背景（可空）：${params.dynasty || "未指定"}
+主角形象锚点（可空）：${params.subjectAppearance?.trim() || "未指定"}
 `;
 
   return { d, toneText, lead };

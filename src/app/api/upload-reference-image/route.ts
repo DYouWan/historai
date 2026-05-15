@@ -1,7 +1,9 @@
 /**
- * 参考图 / 封面上传：仅火山引擎对象存储 TOS（@volcengine/tos-sdk）
+ * 参考图 / 封面上传：火山引擎对象存储 TOS（@volcengine/tos-sdk）
  * POST /api/upload-reference-image
  * Body: { fileName: string, mimeType: string, fileSize: number, fileData: string(base64) }
+ *
+ * 创作中心「上传封面图」与本接口相同：上传后返回公网 URL，供 save-slice-image 拉取落盘及文生图参考链。
  *
  * 环境变量见 `src/lib/tos-reference-upload.ts`
  */

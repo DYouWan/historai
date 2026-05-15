@@ -6,18 +6,26 @@ import type { StylePreset } from "@/lib/types";
 
 /** 与文生图模型拼接的英文画风关键词 */
 export const STYLE_SNIPPET: Record<StylePreset, string> = {
-  ink: "Chinese ink wash, negative space, muted palette",
-  gongbi: "fine-line gongbi, mineral colors, silk texture",
-  cinematic: "cinematic lighting, 35mm, shallow depth of field",
-  docu: "documentary still, desaturated, archival mood",
-  watercolor: "historical watercolor illustration, soft bleed edges",
+  anime:
+    "anime historical key visual, clean linework, cel or soft digital paint, controlled saturation",
+  cinematic: "cinematic lighting, 35mm still, shallow depth of field",
 };
 
 /** 中文造型锚点：封面定人物 + 按封面批量生成镜头文本兜底时复用 */
 export const STYLE_ANCHOR_ZH: Record<StylePreset, string> = {
-  ink: "水墨写意：面部用线简练、留白、淡墨皴擦；衣冠以素雅墨色与赭石点染，宣纸肌理。",
-  gongbi: "工笔重彩：线条匀细、矿物色平涂与晕染；人物仪容端庄，服饰纹样清晰可辨。",
-  cinematic: "电影感：自然光或伦勃朗式侧光，肤色与环境色分离明确，质感偏写实。",
-  docu: "纪实摄影感：低饱和、自然肤色、轻微颗粒与景深，避免过度美颜。",
-  watercolor: "历史插画水彩：边缘水渍、湿画法混色，人物与背景气蕴统一。",
+  anime:
+    "动漫插画：略二次元比例、线稿干净、赛璐璐或轻厚涂；饱和适中、高光明确；衣冠简化但具时代感。",
+  cinematic: "电影质感：侧光或自然光、肤色与环境分离、写实材质与景深。",
 };
+
+/** 写入叙事/分镜提示的人类可读画风名（与 UI 下拉一致） */
+export const STYLE_PRESET_LABEL_ZH: Record<StylePreset, string> = {
+  anime: "动漫插画",
+  cinematic: "电影质感",
+};
+
+/** 请求体或旧 manifest 中可能含已下线预设，统一收敛为当前支持的两种 */
+export function normalizeStylePreset(v: unknown): StylePreset {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return s === "cinematic" ? "cinematic" : "anime";
+}

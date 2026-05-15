@@ -11,6 +11,7 @@ import type {
 } from "@/lib/types";
 import { parseStoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { parseVideoDurationMin } from "@/lib/video-duration";
+import { normalizeStylePreset } from "@/lib/prompts/image-prompts";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -25,6 +26,7 @@ export async function POST(req: Request) {
       sliceAngle?: string;
       subject: string;
       dynasty?: string;
+      subjectAppearance?: string;
       tone?: Tone;
       stylePreset?: StylePreset;
       /** 叙事目标时长（分钟）：1 / 3 / 5 / 8 / 10 / 12 / 15 */
@@ -70,8 +72,9 @@ export async function POST(req: Request) {
       sliceAngle: body.sliceAngle,
       subject: body.subject.trim(),
       dynasty: body.dynasty?.trim(),
+      subjectAppearance: body.subjectAppearance?.trim(),
       tone: body.tone ?? "narrative",
-      stylePreset: body.stylePreset ?? "ink",
+      stylePreset: normalizeStylePreset(body.stylePreset),
       videoDurationMin,
       storyboardChunkMode,
       spineSnapshot: body.spineSnapshot,

@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  CharacterSuggestion,
   GenerationResult,
   SliceSuggestion,
   StoryboardSpineSnapshot,
@@ -10,21 +11,14 @@ import type {
 } from "@/lib/types";
 import type { StoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { VIDEO_DURATION_UI_OPTIONS } from "@/lib/video-duration";
-import {
-  THEME_TITLE_PRESETS,
-  themeBuiltInCharacters,
-  themeBuiltInSlices,
-} from "@/lib/prompts/series-prompts";
-import { driverSupportsReferenceImage } from "@/lib/image-coherence";
-import type { ImageProfileDriver } from "@/lib/media-profiles";
+import { THEME_TITLE_PRESETS } from "@/lib/prompts/series-prompts";
 import { ACTIVE_STUDIO_VERTICAL } from "@/lib/studio-verticals";
 import type { SeedancePromptSceneOutput } from "@/lib/seedance-scene-prompts";
 import {
   VOLCENGINE_TTS_VOICE_CUSTOM,
   VOLCENGINE_TTS_VOICE_PRESETS,
 } from "@/lib/volcengine-tts-voice-presets";
-import type { ChangeEvent } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 const LAST_LLM_PROFILE_KEY = "historai:llmProfileId";
 const LAST_VOLC_TTS_VOICE_KEY = "historai:volcTtsVoice";
@@ -68,11 +62,8 @@ const STORYBOARD_CHUNK_OPTIONS: {
 ];
 
 const STYLE_OPTIONS: { id: StylePreset; label: string }[] = [
+  { id: "anime", label: "动漫插画" },
   { id: "cinematic", label: "电影质感" },
-  { id: "ink", label: "水墨留白" },
-  { id: "gongbi", label: "工笔重彩" },
-  { id: "docu", label: "纪录片存档感" },
-  { id: "watercolor", label: "水彩插画" },
 ];
 
 const fieldClass =
@@ -144,9 +135,9 @@ const stepBlockTitleClass =
 const aiActionClass =
   "inline-flex min-h-[3rem] items-center justify-center rounded-xl bg-amber-500 px-8 text-sm font-semibold text-zinc-950 shadow-lg shadow-amber-950/30 ring-1 ring-amber-400/25 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none";
 
-/** 步骤 4 · 叙事档位估算（网格第四列内全宽） */
-const stepAssistAiBtnClass =
-  "mt-1.5 inline-flex min-h-[2.85rem] w-full items-center justify-center rounded-xl border border-violet-600/40 bg-violet-950/30 px-4 py-2 text-xs font-semibold text-violet-50/95 shadow-sm ring-1 ring-violet-900/35 transition hover:border-violet-400/45 hover:bg-violet-950/45 disabled:cursor-not-allowed disabled:opacity-40 sm:text-[13px]";
+/** 步骤 2 · 上传封面（火山 TOS），与主按钮同高以便并排 */
+const coverUploadBtnClass =
+  "inline-flex min-h-[3rem] w-full shrink-0 items-center justify-center rounded-xl border border-zinc-500/50 bg-zinc-900/55 px-6 text-sm font-semibold text-zinc-100 shadow-sm ring-1 ring-zinc-800/40 transition hover:border-zinc-400/55 hover:bg-zinc-800/60 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto";
 
 /** 步骤 4 · 叙事骨架 / 后续主流程按钮（单独一行，无分组标题） */
 const stepPrimaryGenerateStandaloneBtnClass =
@@ -156,43 +147,45 @@ const workflowSteps = [
   {
     n: "1",
     label: "系列与人物",
-    desc: "强冲突系列预设",
+    desc: "系列名与人物",
   },
-  { n: "2", label: "高光与呈现", desc: "切片标题与说明" },
+  { n: "2", label: "生成封面", desc: "人物形象 + 画风预设，竖屏外宣底图" },
   {
     n: "3",
-    label: "生成封面",
-    desc: "外宣竖屏底图，人物居左、右侧留白（独立 API）",
+    label: "高光与呈现",
+    desc: "叙事时长、切片标题与说明",
   },
-  { n: "4", label: "文案与分镜", desc: "成片选项与主生成镜表" },
+  { n: "4", label: "文案与分镜", desc: "扩写切段、基调与主生成镜表" },
 ] as const;
 
 /** 封面预览条数上限；超出须勾选删除后才可再次生成（并尽量同步删 slice-exports 落盘文件） */
 const MAX_COVER_GALLERY = 5;
 
-/** 转为 base64 data URL 后会显著膨胀，控制体积避免请求体过大 */
-const MAX_COVER_REFERENCE_FILE_BYTES = 20 * 1024 * 1024;
+/** 与 `POST /api/upload-reference-image` 单文件上限一致（火山 TOS） */
+const COVER_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 
-type UploadRefImageJson = { error?: string; url?: string; success?: boolean };
-
-/** 读取 `/api/upload-reference-image` 响应（兼容非 JSON 或 HTML 错误页） */
-function parseUploadReferenceImageResponse(
-  res: Response,
-  bodyText: string,
-): { httpOk: boolean; data: UploadRefImageJson } {
-  try {
-    const data = JSON.parse(bodyText) as UploadRefImageJson;
-    return { httpOk: res.ok, data };
-  } catch {
-    return {
-      httpOk: false,
-      data: {
-        error:
-          bodyText.trim().slice(0, 240) ||
-          `上传接口返回非 JSON（HTTP ${res.status}）`,
-      },
+async function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const s = String(r.result ?? "");
+      const marker = "base64,";
+      const i = s.indexOf(marker);
+      if (i === -1) {
+        reject(new Error("无法读取文件为 Base64"));
+        return;
+      }
+      resolve(s.slice(i + marker.length));
     };
-  }
+    r.onerror = () => reject(new Error("读取文件失败"));
+    r.readAsDataURL(file);
+  });
+}
+
+function isLikelyCoverImageFile(file: File): boolean {
+  const t = (file.type || "").toLowerCase();
+  if (/^image\/(jpeg|png|webp|gif)$/i.test(t)) return true;
+  return /\.(jpe?g|png|webp|gif)$/i.test(file.name || "");
 }
 
 type AssetRow = {
@@ -229,9 +222,10 @@ function voiceoverTtsBuildDownloadFilename(mime: string, folderTitle: string) {
 export function PersonStudioWorkspace() {
   const [seriesTitle, setSeriesTitle] = useState("");
   const [subject, setSubject] = useState("");
+  const [subjectAppearance, setSubjectAppearance] = useState("");
   const [dynasty, setDynasty] = useState("");
   const [tone, setTone] = useState<Tone>("narrative");
-  const [stylePreset, setStylePreset] = useState<StylePreset>("cinematic");
+  const [stylePreset, setStylePreset] = useState<StylePreset>("anime");
   const [videoDurationMin, setVideoDurationMin] =
     useState<VideoDurationMin>(1);
   const [storyboardChunkMode, setStoryboardChunkMode] =
@@ -280,9 +274,8 @@ export function PersonStudioWorkspace() {
   });
   const [coverGallery, setCoverGallery] = useState<CoverGalleryItem[]>([]);
   const [coverDeleteBusy, setCoverDeleteBusy] = useState(false);
-  const coverRefFileInputRef = useRef<HTMLInputElement>(null);
-  /** 直接上传为封面底图（不经文生图），与 AI 出图后同一套落库与画廊逻辑 */
-  const coverDirectUploadInputRef = useRef<HTMLInputElement>(null);
+  const [coverUploadBusy, setCoverUploadBusy] = useState(false);
+  const coverUploadInputRef = useRef<HTMLInputElement>(null);
   const [selectedCoverId, setSelectedCoverId] = useState<string | null>(null);
 
   const latestCoverUrl = useMemo(() => {
@@ -317,18 +310,13 @@ export function PersonStudioWorkspace() {
   const [sliceSuggestions, setSliceSuggestions] = useState<SliceSuggestion[]>(
     [],
   );
-  const [characterSuggestions, setCharacterSuggestions] = useState<string[]>(
-    [],
-  );
+  const [characterSuggestions, setCharacterSuggestions] = useState<
+    CharacterSuggestion[]
+  >([]);
   const [suggestCharsBusy, setSuggestCharsBusy] = useState(false);
   const [charsHint, setCharsHint] = useState<string | null>(null);
   const [suggestSlicesBusy, setSuggestSlicesBusy] = useState(false);
   const [slicesHint, setSlicesHint] = useState<string | null>(null);
-  const [suggestNarrativeDurationBusy, setSuggestNarrativeDurationBusy] =
-    useState(false);
-  const [narrativeDurationHint, setNarrativeDurationHint] = useState<
-    string | null
-  >(null);
 
   useEffect(() => {
     const hook = result?.hook?.trim();
@@ -416,6 +404,7 @@ export function PersonStudioWorkspace() {
   useEffect(() => {
     setCharacterSuggestions([]);
     setCharsHint(null);
+    setSubjectAppearance("");
   }, [seriesTitle]);
 
   useEffect(() => {
@@ -483,28 +472,14 @@ export function PersonStudioWorkspace() {
   }, [volcTtsVoicePreset, volcTtsVoiceCustom]);
 
   const canGenerateStandaloneCover = useMemo(
-    () =>
-      Boolean(
-        subject.trim() &&
-          (sliceAngle.trim() || sliceTitle.trim() || seriesTitle.trim()),
-      ),
-    [subject, sliceAngle, sliceTitle, seriesTitle],
+    () => Boolean(subject.trim() && subjectAppearance.trim()),
+    [subject, subjectAppearance],
   );
 
   /** 与导出文件夹命名一致：切片标题优先，否则系列名，否则未命名 */
   const sliceFolderTitle = useMemo(
     () => sliceTitle.trim() || seriesTitle.trim() || "未命名标题",
     [sliceTitle, seriesTitle],
-  );
-
-  const builtInCharacters = useMemo(
-    () => themeBuiltInCharacters(seriesTitle),
-    [seriesTitle],
-  );
-
-  const builtInSlices = useMemo(
-    () => themeBuiltInSlices(seriesTitle, subject),
-    [seriesTitle, subject],
   );
 
   const voiceoverTtsDownloadFilename = useMemo(
@@ -647,17 +622,6 @@ export function PersonStudioWorkspace() {
   const selectedImageProfile = useMemo(
     () => imageProfiles.find((p) => p.id === imageProfileId),
     [imageProfiles, imageProfileId],
-  );
-
-  const imageProfileSupportsCoverReference = useMemo(
-    () =>
-      Boolean(
-        selectedImageProfile &&
-          driverSupportsReferenceImage(
-            selectedImageProfile.driver as ImageProfileDriver,
-          ),
-      ),
-    [selectedImageProfile],
   );
 
   const modelsInImageVendor = useMemo(() => {
@@ -1070,7 +1034,9 @@ export function PersonStudioWorkspace() {
     setSuggestCharsBusy(true);
     setCharsHint(null);
     const excludeCharacters =
-      characterSuggestions.length > 0 ? [...characterSuggestions] : undefined;
+      characterSuggestions.length > 0 ?
+        characterSuggestions.map((c) => c.name)
+      : undefined;
     try {
       const res = await fetch("/api/suggest-theme-characters", {
         method: "POST",
@@ -1083,7 +1049,7 @@ export function PersonStudioWorkspace() {
       });
       const json = (await res.json()) as {
         error?: string;
-        characters?: string[];
+        characters?: CharacterSuggestion[];
       };
       if (!res.ok) {
         setCharsHint(json.error ?? "推荐失败");
@@ -1113,6 +1079,7 @@ export function PersonStudioWorkspace() {
           profileId: profileId || undefined,
           seriesTitle: seriesTitle.trim(),
           characterName: subject.trim(),
+          videoDurationMin,
           ...(excludeSliceTitles?.length ? { excludeSliceTitles } : {}),
         }),
       });
@@ -1132,51 +1099,15 @@ export function PersonStudioWorkspace() {
     }
   };
 
+  const applyCharacterSuggestion = (c: CharacterSuggestion) => {
+    setSubject(c.name);
+    setSubjectAppearance(c.appearance);
+    setDynasty(c.dynasty.trim());
+  };
+
   const applySuggestion = (s: SliceSuggestion) => {
     setSliceTitle(s.title);
     setSliceAngle(s.angle);
-  };
-
-  const runSuggestNarrativeDuration = async () => {
-    if (
-      !seriesTitle.trim() ||
-      !subject.trim() ||
-      !sliceTitle.trim() ||
-      !sliceAngle.trim()
-    ) {
-      return;
-    }
-    setSuggestNarrativeDurationBusy(true);
-    setNarrativeDurationHint(null);
-    try {
-      const res = await fetch("/api/suggest-narrative-duration", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profileId: profileId || undefined,
-          seriesTitle: seriesTitle.trim(),
-          subject: subject.trim(),
-          sliceTitle: sliceTitle.trim(),
-          sliceAngle: sliceAngle.trim(),
-          dynasty: dynasty.trim() || undefined,
-        }),
-      });
-      const json = (await res.json()) as {
-        error?: string;
-        videoDurationMin?: VideoDurationMin;
-      };
-      if (!res.ok) {
-        setNarrativeDurationHint(json.error ?? "估算失败");
-        return;
-      }
-      if (json.videoDurationMin != null) {
-        setVideoDurationMin(json.videoDurationMin);
-      }
-    } catch (e) {
-      setNarrativeDurationHint(e instanceof Error ? e.message : "网络错误");
-    } finally {
-      setSuggestNarrativeDurationBusy(false);
-    }
   };
 
   const runGenerate = async () => {
@@ -1194,6 +1125,7 @@ export function PersonStudioWorkspace() {
           sliceAngle: sliceAngle.trim() || undefined,
           subject,
           dynasty: dynasty || undefined,
+          subjectAppearance: subjectAppearance.trim() || undefined,
           tone,
           stylePreset,
           videoDurationMin,
@@ -1254,6 +1186,7 @@ export function PersonStudioWorkspace() {
           sliceAngle: sliceAngle.trim() || undefined,
           subject,
           dynasty: dynasty || undefined,
+          subjectAppearance: subjectAppearance.trim() || undefined,
           tone,
           stylePreset,
           videoDurationMin,
@@ -1431,6 +1364,7 @@ export function PersonStudioWorkspace() {
           sliceAngle: sliceAngle.trim() || undefined,
           subject,
           dynasty: dynasty || undefined,
+          subjectAppearance: subjectAppearance.trim() || undefined,
           tone,
           stylePreset,
           videoDurationMin,
@@ -1463,7 +1397,7 @@ export function PersonStudioWorkspace() {
       sceneIndex: number,
       urlByIndex: Record<number, string>,
       snapshot: Record<number, AssetRow>,
-      /** 独立封面底图 URL；缺省时仍可退回镜 1 已出图（兼容旧流程） */
+      /** 独立封面图 URL；缺省时仍可退回镜 1 已出图（兼容旧流程） */
       standaloneCoverUrl: string | null,
     ): { referenceImageUrl?: string; referenceRole?: "previous" | "cover" } => {
       if (sceneIndex <= 1) return {};
@@ -1638,8 +1572,14 @@ export function PersonStudioWorkspace() {
   }, [coverGallery, selectedCoverId]);
 
   const appendCoverToGalleryAndPersist = useCallback(
-    (args: { coverUrl: string; seedForFile: string; provider?: string }) => {
-      const { coverUrl, seedForFile, provider } = args;
+    (args: {
+      coverUrl: string;
+      seedForFile: string;
+      provider?: string;
+      coverKind?: "generate" | "upload";
+    }) => {
+      const { coverUrl, seedForFile, provider, coverKind = "generate" } = args;
+      const doneVerb = coverKind === "upload" ? "上传" : "生成";
       const gid =
         typeof crypto !== "undefined" && "randomUUID" in crypto ?
           crypto.randomUUID()
@@ -1670,7 +1610,7 @@ export function PersonStudioWorkspace() {
           };
           if (!saveRes.ok) {
             setSliceSaveHint(
-              `封面已生成；自动保存失败：${saveJson.error ?? saveRes.status}（可再点「生成封面底图」重试，或使用下方「导出资源」）`,
+              `封面已${doneVerb}；自动保存失败：${saveJson.error ?? saveRes.status}（可再点「生成封面图」或重新上传重试，或使用下方「导出资源」）`,
             );
             return;
           }
@@ -1686,8 +1626,8 @@ export function PersonStudioWorkspace() {
         } catch (e) {
           setSliceSaveHint(
             e instanceof Error ?
-              `封面已生成；自动保存失败：${e.message}（可再点「生成封面底图」重试，或使用「导出资源」）`
-            : "封面已生成；自动保存失败（可再点「生成封面底图」重试，或使用「导出资源」）",
+              `封面已${doneVerb}；自动保存失败：${e.message}（可再点「生成封面图」或重新上传重试，或使用「导出资源」）`
+            : `封面已${doneVerb}；自动保存失败（可再点「生成封面图」或重新上传重试，或使用「导出资源」）`,
           );
         }
       })();
@@ -1695,13 +1635,79 @@ export function PersonStudioWorkspace() {
     [subject, sliceFolderTitle],
   );
 
-  const runStandaloneCoverRequest = async (
-    referenceImageUrl?: string | null,
-  ): Promise<boolean> => {
+  const handleCoverUploadFileChange = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const input = e.target;
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file) return;
+      if (!subject.trim()) {
+        setError("上传封面图前请先填写「人物/主题」。");
+        return;
+      }
+      if (coverGallery.length >= MAX_COVER_GALLERY) {
+        setError(
+          `已有 ${MAX_COVER_GALLERY} 张封面预览。请先勾选删除若干张后再上传。`,
+        );
+        return;
+      }
+      if (file.size > COVER_UPLOAD_MAX_BYTES) {
+        setError(
+          `图片须不超过 ${Math.floor(COVER_UPLOAD_MAX_BYTES / 1024 / 1024)}MB。`,
+        );
+        return;
+      }
+      if (!isLikelyCoverImageFile(file)) {
+        setError("仅支持 JPEG、PNG、WebP、GIF 图片。");
+        return;
+      }
+      setCoverUploadBusy(true);
+      setError(null);
+      setSliceSaveHint(null);
+      try {
+        const fileData = await readFileAsBase64(file);
+        const res = await fetch("/api/upload-reference-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: file.name || "cover.jpg",
+            mimeType: file.type || "image/jpeg",
+            fileSize: file.size,
+            fileData,
+          }),
+        });
+        const json = (await res.json()) as {
+          error?: string;
+          url?: string;
+          success?: boolean;
+        };
+        if (!res.ok || !json.url?.trim()) {
+          setError(json.error ?? "上传失败");
+          return;
+        }
+        const uploadStem = `${projectSeed}-upload-${
+          typeof crypto !== "undefined" && "randomUUID" in crypto ?
+            crypto.randomUUID().slice(0, 10)
+          : `${Date.now()}`
+        }`;
+        appendCoverToGalleryAndPersist({
+          coverUrl: json.url.trim(),
+          seedForFile: uploadStem,
+          provider: "tos",
+          coverKind: "upload",
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "上传失败");
+      } finally {
+        setCoverUploadBusy(false);
+      }
+    },
+    [subject, coverGallery.length, projectSeed, appendCoverToGalleryAndPersist],
+  );
+
+  const runStandaloneCoverRequest = async (): Promise<boolean> => {
     if (!canGenerateStandaloneCover) {
-      setError(
-        "请先填写人物，并至少填写系列名、切片标题或切片说明之一。",
-      );
+      setError("请先填写人物，并在「形象描述」中填写人物形象（可与 AI 推荐人物一致）。");
       return false;
     }
     if (coverGallery.length >= MAX_COVER_GALLERY) {
@@ -1714,14 +1720,6 @@ export function PersonStudioWorkspace() {
     setError(null);
     setSliceSaveHint(null);
     try {
-      const refTrim = referenceImageUrl?.trim() ?? "";
-      /** 带参考时 API 仍传 `-ref-…`，与无参考调用区分；保存封面文件名统一用下方 `projectSeed`。 */
-      const seedForApi =
-        refTrim ?
-          `${projectSeed}-ref-${Date.now().toString(36)}`
-            .replace(/\s+/g, "-")
-            .slice(0, 64)
-        : projectSeed;
       const res = await fetch("/api/assets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1729,20 +1727,15 @@ export function PersonStudioWorkspace() {
           sceneIndex: 0,
           standaloneCover: true,
           visualDescription: "—",
-          seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
           stylePreset,
-          projectSeed: seedForApi,
+          projectSeed,
           imageProfileId: imageProfileId || undefined,
           subject: subject.trim() || undefined,
           dynasty: dynasty.trim() || undefined,
-          ...(refTrim ?
-            { referenceImageUrl: refTrim, referenceRole: "cover" as const }
-          : {}),
+          subjectAppearance: subjectAppearance.trim(),
         }),
       });
-      const json = (await res.json()) as { error?: string };
+      const json = (await res.json()) as { error?: string; url?: string; provider?: string };
       if (!res.ok) {
         if (res.status === 400 && json.error) {
           setError(String(json.error));
@@ -1755,6 +1748,7 @@ export function PersonStudioWorkspace() {
         coverUrl,
         seedForFile: projectSeed,
         provider: json.provider as string | undefined,
+        coverKind: "generate",
       });
 
       return true;
@@ -1805,152 +1799,7 @@ export function PersonStudioWorkspace() {
     setBatchBusy(true);
     setError(null);
     try {
-      await runStandaloneCoverRequest(undefined);
-    } finally {
-      setBatchBusy(false);
-    }
-  };
-
-  const onCoverReferenceFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
-    if (!imageProfileSupportsCoverReference) {
-      setError(
-        "按参考图重生需要文生图档案为通义万相或火山 Seedream（支持图生图）。请在页顶切换档案。",
-      );
-      return;
-    }
-    if (!f.type.startsWith("image/")) {
-      setError("请选择图片文件。");
-      return;
-    }
-    if (f.size > MAX_COVER_REFERENCE_FILE_BYTES) {
-      setError("参考图请小于 20MB。");
-      return;
-    }
-
-    setBatchBusy(true);
-    setError(null);
-    setCoverRequest({ status: "running" });
-
-    try {
-      // 1. 后端上传到火山 TOS，得到公网 HTTPS 对象 URL
-      const arrayBuffer = await f.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      let binary = "";
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const base64 = btoa(binary);
-
-      const uploadRes = await fetch("/api/upload-reference-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileName: f.name,
-          mimeType: f.type,
-          fileSize: f.size,
-          fileData: base64,
-        }),
-      });
-
-      const uploadRaw = await uploadRes.text();
-      const { httpOk, data: uploadJson } = parseUploadReferenceImageResponse(
-        uploadRes,
-        uploadRaw,
-      );
-
-      if (!httpOk || !uploadJson.url?.trim()) {
-        setCoverRequest({
-          status: "failed",
-          error: uploadJson.error || "上传到图床失败",
-        });
-        return;
-      }
-
-      // 2. 使用图床 URL 作为参考图生成封面
-      await runStandaloneCoverRequest(uploadJson.url.trim());
-
-    } catch (err) {
-      setCoverRequest({ status: "failed", error: err instanceof Error ? err.message : "上传失败" });
-    } finally {
-      setBatchBusy(false);
-    }
-  };
-
-  const onUploadCoverOnlyFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
-    if (!canGenerateStandaloneCover) {
-      setError(
-        "请先填写人物，并至少填写系列名、切片标题或切片说明之一。",
-      );
-      return;
-    }
-    if (coverGallery.length >= MAX_COVER_GALLERY) {
-      setError(
-        `已有 ${MAX_COVER_GALLERY} 张封面预览。请先勾选要移除的缩略图，点击下方「删除已勾选」，将同步删除 slice-exports 内已保存的图片后再生成新的封面。`,
-      );
-      return;
-    }
-    if (!f.type.startsWith("image/")) {
-      setError("请选择图片文件。");
-      return;
-    }
-    if (f.size > MAX_COVER_REFERENCE_FILE_BYTES) {
-      setError("封面图请小于 20MB。");
-      return;
-    }
-
-    setBatchBusy(true);
-    setError(null);
-    setCoverRequest({ status: "running" });
-    setSliceSaveHint(null);
-    try {
-      const arrayBuffer = await f.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      let binary = "";
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]!);
-      }
-      const base64 = btoa(binary);
-
-      const uploadRes = await fetch("/api/upload-reference-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileName: f.name,
-          mimeType: f.type,
-          fileSize: f.size,
-          fileData: base64,
-        }),
-      });
-
-      const uploadRaw = await uploadRes.text();
-      const { httpOk, data: uploadJson } = parseUploadReferenceImageResponse(
-        uploadRes,
-        uploadRaw,
-      );
-
-      if (!httpOk || !uploadJson.url?.trim()) {
-        setCoverRequest({
-          status: "failed",
-          error: uploadJson.error || "上传到图床失败",
-        });
-        return;
-      }
-
-      appendCoverToGalleryAndPersist({
-        coverUrl: uploadJson.url.trim(),
-        seedForFile: projectSeed,
-      });
-    } catch (err) {
-      setCoverRequest({
-        status: "failed",
-        error: err instanceof Error ? err.message : "上传失败",
-      });
+      await runStandaloneCoverRequest();
     } finally {
       setBatchBusy(false);
     }
@@ -1961,7 +1810,7 @@ export function PersonStudioWorkspace() {
     if (!result?.scenes.length) return;
     const coverUrl = latestCoverUrl;
     if (!coverUrl) {
-      setError("请先在上方成功生成「封面底图」，再按封面批量生成镜头。");
+      setError("请先在「步骤 2 · 生成封面图」成功生成封面图，再按封面批量生成镜头。");
       return;
     }
     setBatchBusy(true);
@@ -2286,8 +2135,7 @@ export function PersonStudioWorkspace() {
                   <div>
                     <h3 className={stepBlockTitleClass}>人物与背景</h3>
                     <p className="mt-1 text-[11px] text-zinc-600">
-                      强冲突预设系列自带人物与切口模板（见下方「系列预设人物」「内置切口」）；亦可点「AI
-                      推荐相关人物」换一批。已有 AI 推荐时再次点击会排除当前列表中的人选。
+                      点「AI 推荐相关人物」按系列生成人选、形象与朝代；再次点击会排除当前列表中的人选。
                     </p>
                   </div>
                   <button
@@ -2304,40 +2152,32 @@ export function PersonStudioWorkspace() {
                     {charsHint}
                   </p>
                 ) : null}
-                {builtInCharacters.length > 0 ? (
-                  <div className="mb-5">
-                    <p className="mb-2 text-[11px] font-medium text-emerald-200/75">
-                      系列预设人物 · 点击填入人物栏（离线）
-                    </p>
-                    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {builtInCharacters.map((name) => (
-                        <li key={`builtin-char-${name}`}>
-                          <button
-                            type="button"
-                            onClick={() => setSubject(name)}
-                            className="w-full rounded-xl border border-emerald-800/55 bg-emerald-950/25 px-3 py-2.5 text-left text-xs text-emerald-50/95 transition hover:border-emerald-500/55 hover:bg-emerald-950/40"
-                          >
-                            {name}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
                 {characterSuggestions.length > 0 ? (
                   <div className="mb-5">
                     <p className="mb-2 text-[11px] font-medium text-zinc-500">
-                      AI 推荐 · 点击填入人物栏
+                      AI 推荐 · 点击填入人物、形象与朝代
                     </p>
                     <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {characterSuggestions.map((name) => (
-                        <li key={name}>
+                      {characterSuggestions.map((c) => (
+                        <li key={c.name}>
                           <button
                             type="button"
-                            onClick={() => setSubject(name)}
-                            className="w-full rounded-xl border border-zinc-700/90 bg-zinc-900/60 px-3 py-2.5 text-left text-xs text-zinc-200 transition hover:border-amber-600/45 hover:bg-zinc-900 hover:text-amber-100/90"
+                            onClick={() => applyCharacterSuggestion(c)}
+                            className="w-full rounded-xl border border-zinc-700/90 bg-zinc-900/60 px-3 py-2.5 text-left transition hover:border-amber-600/45 hover:bg-zinc-900 hover:text-amber-100/90"
                           >
-                            {name}
+                            <span className="block text-xs text-zinc-200">
+                              {c.name}
+                            </span>
+                            {c.dynasty ? (
+                              <span className="mt-0.5 block text-[10px] font-medium text-sky-200/80">
+                                {c.dynasty}
+                              </span>
+                            ) : null}
+                            {c.appearance ? (
+                              <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">
+                                {c.appearance}
+                              </span>
+                            ) : null}
                           </button>
                         </li>
                       ))}
@@ -2352,7 +2192,7 @@ export function PersonStudioWorkspace() {
                     </span>
                     <input
                       className={`${fieldClass} mt-1.5`}
-                      placeholder="如：曹操（系列预设 / AI 推荐）"
+                      placeholder="如：曹操（AI 推荐或手填）"
                       value={subject}
                       onChange={(e) => setSubject(e.target.value)}
                     />
@@ -2360,7 +2200,9 @@ export function PersonStudioWorkspace() {
                   <label className="block min-w-0">
                     <span className={groupTitleClass}>
                       朝代 / 背景{" "}
-                      <span className="font-normal text-zinc-600">（选填）</span>
+                      <span className="font-normal text-zinc-600">
+                        （选填 · AI 推荐可自动填入）
+                      </span>
                     </span>
                     <input
                       className={`${fieldClass} mt-1.5`}
@@ -2369,147 +2211,29 @@ export function PersonStudioWorkspace() {
                       onChange={(e) => setDynasty(e.target.value)}
                     />
                   </label>
+                  <label className="block min-w-0 sm:col-span-2">
+                    <span className={groupTitleClass}>
+                      形象描述{" "}
+                      <span className="font-normal text-zinc-600">（选填）</span>
+                    </span>
+                    <textarea
+                      className={`${fieldClass} mt-1.5 min-h-[4.5rem] resize-y`}
+                      placeholder="如：中年将领，武冠战袍，眉宇沉毅，目光如炬（AI 推荐可自动填入）"
+                      value={subjectAppearance}
+                      onChange={(e) => setSubjectAppearance(e.target.value)}
+                      rows={2}
+                    />
+                  </label>
                 </div>
               </section>
-
-              <section className={stepInnerCardClass} aria-label="峰值切片">
-                <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-6">
-                  <div className="min-w-0 flex-1">
-                    <h3 className={stepBlockTitleClass}>峰值切片策划</h3>
-                    <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-zinc-600">
-                      每条建议为
-                      <strong className="font-medium text-zinc-500">
-                        单一高峰时刻或关键抉择
-                      </strong>
-                      （非生平）；标题偏传播，
-                      <strong className="font-medium text-zinc-500">
-                        问句或数字对比
-                      </strong>
-                      可多选尝试。说明里应有
-                      <strong className="font-medium text-zinc-500">
-                        冲突与赌注（stakes）
-                      </strong>
-                      。内置预设系列在选好人物后会显示「内置切口模板」，无需等待请求。
-                      点选后在步骤 2 可继续编辑正文；AI 推荐再次点击会排除当前列表标题。
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={
-                      suggestSlicesBusy || !seriesTitle.trim() || !subject.trim()
-                    }
-                    onClick={runSuggestSubtitles}
-                    className={`${aiActionClass} w-full shrink-0 lg:w-auto`}
-                  >
-                    {suggestSlicesBusy ? "推荐中…" : "AI 推荐切片标题"}
-                  </button>
-                </div>
-                {slicesHint ? (
-                  <p className="mt-1 rounded-xl border border-rose-900/45 bg-rose-950/25 px-3 py-2.5 text-xs leading-relaxed text-rose-100/95">
-                    {slicesHint}
-                  </p>
-                ) : null}
-                {builtInSlices.length > 0 ? (
-                  <div className="mt-4">
-                    <p className="mb-2 text-[11px] font-medium text-emerald-200/75">
-                      内置切口模板（当前人物 · 离线）
-                    </p>
-                    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {builtInSlices.map((s, i) => (
-                        <li key={`builtin-slice-${s.title}-${i}`}>
-                          <button
-                            type="button"
-                            onClick={() => applySuggestion(s)}
-                            className="flex h-full w-full flex-col rounded-lg border border-emerald-800/55 bg-emerald-950/20 p-3 text-left transition hover:border-emerald-500/50 hover:bg-emerald-950/35"
-                          >
-                            <span className="text-sm font-medium leading-snug text-emerald-50/95">
-                              {s.title}
-                            </span>
-                            <span className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-emerald-100/75">
-                              {s.angle}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {sliceSuggestions.length > 0 ? (
-                  <div className="mt-4">
-                    <p className="mb-2 text-[11px] font-medium text-zinc-500">
-                      AI 推荐 · 点击填入峰值切口（标题 + 说明，步骤 2 可改）
-                    </p>
-                    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {sliceSuggestions.map((s, i) => (
-                        <li key={`${s.title}-${i}`}>
-                          <button
-                            type="button"
-                            onClick={() => applySuggestion(s)}
-                            className="flex h-full w-full flex-col rounded-lg border border-zinc-700/90 bg-zinc-900/50 p-3 text-left transition hover:border-amber-600/50 hover:bg-zinc-900/90"
-                          >
-                            <span className="text-sm font-medium leading-snug text-amber-100/90">
-                              {s.title}
-                            </span>
-                            <span className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-zinc-500">
-                              {s.angle}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </section>
             </div>
-          </div>
-
-          <div className={`${panelClass} border-l-2 border-l-amber-600/25`}>
-            <div>
-              <p className={sectionLabelClass}>高光切片 · 步骤 2</p>
-            </div>
-
-            <div className="mt-5 grid gap-4 border-t border-zinc-800/80 pt-5 sm:grid-cols-2">
-              <label className="block sm:col-span-2">
-                <span className={groupTitleClass}>切片标题</span>
-                <input
-                  className={`${fieldClass} mt-1.5`}
-                  placeholder="如：离皇位最近却不敢坐的人"
-                  value={sliceTitle}
-                  onChange={(e) => setSliceTitle(e.target.value)}
-                />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className={groupTitleClass}>切片说明（切片命题）</span>
-                <textarea
-                  rows={3}
-                  className={`${fieldClass} mt-1.5 min-h-[5.5rem] resize-y`}
-                  placeholder="1～3 句正面写「讲什么」：一个高光或争议的冲突/行动/后果；不必写「不讲什么」。"
-                  value={sliceAngle}
-                  onChange={(e) => setSliceAngle(e.target.value)}
-                />
-              </label>
-            </div>
-            {(sliceTitle.trim() || sliceAngle.trim()) && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSliceTitle("");
-                  setSliceAngle("");
-                  setSliceSuggestions([]);
-                  setSlicesHint(null);
-                }}
-                className="mt-3 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-400 hover:underline"
-              >
-                清除切片标题
-              </button>
-            )}
           </div>
 
           <div
             className={`${panelClass} border-l-2 border-l-emerald-600/35`}
           >
             <div className="min-w-0">
-              <p className={sectionLabelClass}>步骤 3 · 生成封面图</p>
+              <p className={sectionLabelClass}>步骤 2 · 生成封面图</p>
 
               {!mediaProfilesError &&
               imageProfiles.length > 0 &&
@@ -2518,120 +2242,84 @@ export function PersonStudioWorkspace() {
                   当前文生图档案未检测到密钥，封面请求可能失败。请在页顶更换已配置的静帧档案。
                 </p>
               ) : null}
-              {selectedImageProfile &&
-              selectedImageProfile.configured &&
-              !imageProfileSupportsCoverReference ? (
-                <p className="mt-3 max-w-2xl rounded-lg border border-zinc-700/55 bg-zinc-900/40 px-3 py-2 text-[11px] leading-relaxed text-zinc-400">
-                  「按参考图重生」依赖图生图：当前档案为纯文生图，无法使用上传或列表图作参考；请切换到「通义万相」或「火山
-                  Seedream」等已在配置中支持参考图的档案。
-                </p>
-              ) : null}
               <p className="mt-3 max-w-2xl text-[11px] leading-relaxed text-zinc-400">
-                封面底图为纯画面、无内嵌字；文生图提示已固定为人物在画幅左侧，右侧纵向留白便于后期叠标题与说明。
+                根据步骤 1 的<strong className="font-medium text-zinc-500">人物、形象描述</strong>
+                与<strong className="font-medium text-zinc-500">朝代/背景</strong>
+                ，结合下方<strong className="font-medium text-zinc-500">画风预设</strong>
+                生成竖屏外宣底图；纯画面无内嵌字，人物居左、右侧留白。
               </p>
             </div>
-            <div className="mt-5 flex flex-col gap-4 border-t border-zinc-800/70 pt-5 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
-              <label className="block min-w-0 flex-1 sm:max-w-md">
-                <span className={groupTitleClass}>
-                  画风预设（写入分镜描述）
-                </span>
-                <select
-                  className={`${fieldClass} mt-1.5`}
-                  value={stylePreset}
-                  onChange={(e) =>
-                    setStylePreset(e.target.value as StylePreset)
-                  }
-                >
-                  {STYLE_OPTIONS.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:min-w-0 sm:flex-row sm:flex-wrap sm:justify-end">
-                <input
-                  ref={coverRefFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  aria-hidden
-                  onChange={onCoverReferenceFileChange}
-                />
-                <input
-                  ref={coverDirectUploadInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  aria-hidden
-                  onChange={onUploadCoverOnlyFileChange}
-                />
-                <button
-                  type="button"
-                  disabled={
-                    batchBusy ||
-                    !canGenerateStandaloneCover ||
-                    coverGallery.length >= MAX_COVER_GALLERY
-                  }
-                  title={
-                    coverGallery.length >= MAX_COVER_GALLERY ?
-                      `已达 ${MAX_COVER_GALLERY} 张上限，请先勾选并删除若干封面后再生成`
-                    : undefined
-                  }
-                  onClick={() => void runCoverOnly()}
-                  className={`${aiActionClass} w-full shrink-0 sm:w-auto`}
-                >
-                  {coverRequest.status === "running" ?
-                    "封面生成中…"
-                  : "生成封面底图"}
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    batchBusy ||
-                    !canGenerateStandaloneCover ||
-                    coverGallery.length >= MAX_COVER_GALLERY
-                  }
-                  title={
-                    coverGallery.length >= MAX_COVER_GALLERY ?
-                      `已达 ${MAX_COVER_GALLERY} 张上限，请先勾选并删除若干封面后再上传`
-                    : "上传本地图片为封面底图（经图床公网 URL）；落盘文件名与「生成封面底图」相同（同 projectSeed；若目录中已有同名则自动 -2、-3…）"
-                  }
-                  onClick={() => coverDirectUploadInputRef.current?.click()}
-                  className={`${aiActionClass} w-full shrink-0 sm:w-auto`}
-                >
-                  上传封面图
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    batchBusy ||
-                    !canGenerateStandaloneCover ||
-                    coverGallery.length >= MAX_COVER_GALLERY ||
-                    !imageProfileSupportsCoverReference
-                  }
-                  title={
-                    !imageProfileSupportsCoverReference ?
-                      "当前文生图档案不支持参考图（需通义万相或火山 Seedream）"
-                    : coverGallery.length >= MAX_COVER_GALLERY ?
-                      `已达 ${MAX_COVER_GALLERY} 张上限`
-                    : "从本地上传图片到云存储，作为参考图重生封面"
-                  }
-                  onClick={() => coverRefFileInputRef.current?.click()}
-                  className={`${aiActionClass} w-full shrink-0 sm:w-auto`}
-                >
-                  按参考图重生
-                </button>
+            <div className="mt-5 border-t border-zinc-800/70 pt-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
+                <label className="block min-w-0 flex-1 sm:max-w-md">
+                  <span className={groupTitleClass}>画风预设（封面与分镜）</span>
+                  <select
+                    className={`${fieldClass} mt-1.5`}
+                    value={stylePreset}
+                    onChange={(e) =>
+                      setStylePreset(e.target.value as StylePreset)
+                    }
+                  >
+                    {STYLE_OPTIONS.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:flex-row sm:justify-end sm:gap-3">
+                  <input
+                    ref={coverUploadInputRef}
+                    type="file"
+                    className="hidden"
+                    accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                    onChange={handleCoverUploadFileChange}
+                  />
+                  <button
+                    type="button"
+                    disabled={
+                      batchBusy ||
+                      coverUploadBusy ||
+                      coverRequest.status === "running" ||
+                      !subject.trim() ||
+                      coverGallery.length >= MAX_COVER_GALLERY
+                    }
+                    title={
+                      !subject.trim() ?
+                        "请先填写步骤 1 的「人物/主题」"
+                      : coverGallery.length >= MAX_COVER_GALLERY ?
+                        `已达 ${MAX_COVER_GALLERY} 张上限，请先勾选并删除若干封面后再上传`
+                      : "上传到火山引擎对象存储（TOS），用于封面预览、保存至切片目录及分镜图生图参考"
+                    }
+                    onClick={() => coverUploadInputRef.current?.click()}
+                    className={coverUploadBtnClass}
+                  >
+                    {coverUploadBusy ? "封面上传中…" : "上传封面图"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      batchBusy ||
+                      coverUploadBusy ||
+                      !canGenerateStandaloneCover ||
+                      coverGallery.length >= MAX_COVER_GALLERY
+                    }
+                    title={
+                      coverGallery.length >= MAX_COVER_GALLERY ?
+                        `已达 ${MAX_COVER_GALLERY} 张上限，请先勾选并删除若干封面后再生成`
+                      : undefined
+                    }
+                    onClick={() => void runCoverOnly()}
+                    className={`${aiActionClass} w-full shrink-0 sm:w-auto`}
+                  >
+                    {coverRequest.status === "running" ?
+                      "封面生成中…"
+                    : "生成封面图"}
+                  </button>
+                </div>
               </div>
             </div>
             <div className="mt-5 border-t border-zinc-800/70 pt-5">
-              {coverGallery.length >= MAX_COVER_GALLERY &&
-              coverRequest.status !== "running" ? (
-                <p className="mb-3 max-w-2xl rounded-lg border border-amber-900/45 bg-amber-950/20 px-3 py-2 text-[11px] leading-relaxed text-amber-100/95">
-                  已满 {MAX_COVER_GALLERY}{" "}
-                  张。请勾选需移除的封面，点击下方「删除已勾选」清空名额；若该张已成功自动保存至项目目录，将同步删除磁盘上的对应文件。
-                </p>
-              ) : null}
               {coverRequest.status === "failed" && coverRequest.error ? (
                 <p className="mb-2 max-w-2xl text-sm leading-snug text-rose-200">
                   {coverRequest.error}
@@ -2639,11 +2327,6 @@ export function PersonStudioWorkspace() {
               ) : null}
               {coverRequest.status === "running" ? (
                 <p className="text-[11px] text-amber-200/80">正在请求封面…</p>
-              ) : null}
-              {coverGallery.length === 0 && coverRequest.status === "idle" ? (
-                <p className="text-[11px] text-zinc-600">
-                  尚未添加封面预览。可使用上方「生成封面底图」「上传封面图」或「按参考图重生」。
-                </p>
               ) : null}
               {coverGallery.length > 0 ? (
                 <>
@@ -2683,8 +2366,8 @@ export function PersonStudioWorkspace() {
                               src={item.url}
                               alt={
                                 idx === 0 ?
-                                  "封面底图（最新）"
-                                : "历史封面底图"
+                                  "封面图（最新）"
+                                : "历史封面图"
                               }
                               className="aspect-[9/16] w-full object-cover object-center"
                             />
@@ -2726,38 +2409,131 @@ export function PersonStudioWorkspace() {
                       );
                     })}
                   </div>
+                  {coverGallery.length >= MAX_COVER_GALLERY &&
+                  coverRequest.status !== "running" ? (
+                    <p className="mt-3 max-w-2xl rounded-lg border border-amber-900/45 bg-amber-950/20 px-3 py-2 text-[11px] leading-relaxed text-amber-100/95">
+                      已满 {MAX_COVER_GALLERY}{" "}
+                      张。请勾选需移除的封面，点击下方「删除已勾选」清空名额；若该张已成功自动保存至项目目录，将同步删除磁盘上的对应文件。
+                    </p>
+                  ) : null}
                 </>
               ) : null}
             </div>
           </div>
 
+          <div className={`${panelClass} border-l-2 border-l-amber-600/25`}>
+            <div>
+              <p className={sectionLabelClass}>高光切片 · 步骤 3</p>
+            </div>
+
+            {slicesHint ? (
+              <p className="mt-3 rounded-xl border border-rose-900/45 bg-rose-950/25 px-3 py-2.5 text-xs leading-relaxed text-rose-100/95">
+                {slicesHint}
+              </p>
+            ) : null}
+
+            <div className="mt-5 grid gap-4 border-t border-zinc-800/80 pt-5 sm:grid-cols-2">
+              <div className="block sm:col-span-2">
+                <div className="mt-1.5 flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-3">
+                  <label className="flex min-w-0 flex-1 flex-col">
+                    <span className={groupTitleClass}>切片标题</span>
+                    <input
+                      className={`${fieldClass} mt-1.5 w-full`}
+                      placeholder="如：离皇位最近却不敢坐的人"
+                      value={sliceTitle}
+                      onChange={(e) => setSliceTitle(e.target.value)}
+                    />
+                  </label>
+                  <label className="flex w-full shrink-0 flex-col sm:w-[12rem]">
+                    <span className={groupTitleClass}>叙事时长</span>
+                    <select
+                      className={`${fieldClass} mt-1.5`}
+                      value={videoDurationMin}
+                      onChange={(e) => {
+                        setVideoDurationMin(
+                          Number(e.target.value) as VideoDurationMin,
+                        );
+                      }}
+                    >
+                      {VIDEO_DURATION_UI_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={
+                      suggestSlicesBusy || !seriesTitle.trim() || !subject.trim()
+                    }
+                    onClick={runSuggestSubtitles}
+                    className={`${aiActionClass} w-full shrink-0 sm:w-auto sm:px-6`}
+                  >
+                    {suggestSlicesBusy ? "推荐中…" : "AI 推荐切片标题"}
+                  </button>
+                </div>
+              </div>
+              <label className="block sm:col-span-2">
+                <span className={groupTitleClass}>切片说明（切片命题）</span>
+                <textarea
+                  rows={3}
+                  className={`${fieldClass} mt-1.5 min-h-[5.5rem] resize-y`}
+                  placeholder="1～3 句正面写「讲什么」：一个高光或争议的冲突/行动/后果；不必写「不讲什么」。"
+                  value={sliceAngle}
+                  onChange={(e) => setSliceAngle(e.target.value)}
+                />
+              </label>
+            </div>
+            {sliceSuggestions.length > 0 ? (
+              <div className="mt-4">
+                <p className="mb-2 text-[11px] font-medium text-zinc-500">
+                  AI 推荐 · 点击填入上方标题与切片说明
+                </p>
+                <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {sliceSuggestions.map((s, i) => (
+                    <li key={`${s.title}-${i}`}>
+                      <button
+                        type="button"
+                        onClick={() => applySuggestion(s)}
+                        className="flex h-full w-full flex-col rounded-lg border border-zinc-700/90 bg-zinc-900/50 p-3 text-left transition hover:border-amber-600/50 hover:bg-zinc-900/90"
+                      >
+                        <span className="text-sm font-medium leading-snug text-amber-100/90">
+                          {s.title}
+                        </span>
+                        <span className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-zinc-500">
+                          {s.angle}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {(sliceTitle.trim() || sliceAngle.trim()) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSliceTitle("");
+                  setSliceAngle("");
+                  setSliceSuggestions([]);
+                  setSlicesHint(null);
+                }}
+                className="mt-3 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-400 hover:underline"
+              >
+                清除切片标题
+              </button>
+            )}
+          </div>
+
           <footer className="rounded-xl border border-zinc-800/60 bg-zinc-950/30 px-4 py-5 sm:px-5">
             <p className={sectionLabelClass}>步骤 4 · 生成文案与分镜</p>
             <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-zinc-500">
-              先设叙事时长、扩写切段与叙事基调。主流程固定为三步：叙事骨架（L1）→
+              叙事时长在步骤 3「切片标题」行右侧选择，会参与「AI
+              推荐切片标题」与主生成镜数体量。请先设扩写切段与叙事基调。主流程固定为三步：叙事骨架（L1）→
               整稿口播（L2）→ 分镜扩写（L3），便于在中间确认口播再出分镜。完成后在下方批量出静帧。
             </p>
-            <div className="mt-4 grid grid-cols-1 gap-4 border-t border-zinc-800/70 pt-4 sm:grid-cols-2 xl:grid-cols-4 xl:items-end">
-              <div className="block min-w-0">
-                <label className="block">
-                  <span className={groupTitleClass}>叙事时长</span>
-                  <select
-                    className={`${fieldClass} mt-1.5`}
-                    value={videoDurationMin}
-                    onChange={(e) => {
-                      setVideoDurationMin(
-                        Number(e.target.value) as VideoDurationMin,
-                      );
-                    }}
-                  >
-                    {VIDEO_DURATION_UI_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+            <div className="mt-4 grid grid-cols-1 gap-4 border-t border-zinc-800/70 pt-4 sm:grid-cols-2 sm:items-end">
               <label className="block min-w-0">
                 <span className={groupTitleClass}>分镜扩写切段</span>
                 <select
@@ -2791,32 +2567,6 @@ export function PersonStudioWorkspace() {
                   </option>
                 </select>
               </label>
-              <div className="flex min-w-0 flex-col justify-end">
-                <span className={groupTitleClass}>叙事档位</span>
-                <button
-                  type="button"
-                  disabled={
-                    suggestNarrativeDurationBusy ||
-                    loading ||
-                    !seriesTitle.trim() ||
-                    !subject.trim() ||
-                    !sliceTitle.trim() ||
-                    !sliceAngle.trim()
-                  }
-                  title="根据系列、主角与峰值切片命题，估算合适的成片时长档位"
-                  onClick={() => void runSuggestNarrativeDuration()}
-                  className={stepAssistAiBtnClass}
-                >
-                  {suggestNarrativeDurationBusy ?
-                    "估算中…"
-                  : "AI 估算叙事档位"}
-                </button>
-                {narrativeDurationHint ?
-                  <p className="mt-2 rounded-lg border border-rose-900/45 bg-rose-950/25 px-2.5 py-2 text-[11px] leading-relaxed text-rose-100/95">
-                    {narrativeDurationHint}
-                  </p>
-                : null}
-              </div>
             </div>
             <div className="mt-4 border-t border-zinc-800/70 pt-4">
               <button
@@ -3590,7 +3340,7 @@ export function PersonStudioWorkspace() {
                                   type="button"
                                   disabled={row?.status === "running"}
                                   title={
-                                    "与顶部「按上一镜批量」同一规则：优先以上一镜成片为参考（支持图生图时）；上一镜尚未出图则用封面底图。"
+                                    "与顶部「按上一镜批量」同一规则：优先以上一镜成片为参考（支持图生图时）；上一镜尚未出图则用封面图。"
                                   }
                                   className={storyboardOpPrimaryBtn}
                                   onClick={() => {
@@ -3675,7 +3425,7 @@ export function PersonStudioWorkspace() {
                                   title={
                                     latestCoverUrl ?
                                       "以封面为参考强锁主角样貌；大场面或换视角可改用上方「按切片内容生成」（需档案支持参考图）"
-                                    : "请先在上方成功生成封面底图"
+                                    : "请先在「步骤 2 · 生成封面图」成功生成封面图"
                                   }
                                   className={storyboardOpCoverRefBtn}
                                   onClick={() => {

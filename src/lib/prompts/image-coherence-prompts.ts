@@ -2,6 +2,8 @@
  * 文生图 / 图生图：封面与跟镜的中文约束与拼装片段（供 image-coherence 调度）
  */
 
+import type { StylePreset } from "@/lib/types";
+
 /** 未填 subject 时的主角占位说明 */
 export const IMAGE_SUBJECT_FALLBACK_ANCHOR =
   "主角（请以分镜画面描述中的具体历史人物为准，须为画面唯一视觉中心）";
@@ -20,6 +22,59 @@ export function anchorSubjectLabelForImage(subject?: string | null): string {
   const t = subject?.trim();
   if (t) return t;
   return IMAGE_SUBJECT_FALLBACK_ANCHOR;
+}
+
+/** 独立封面（人物形象驱动）中，外形描述写入提示的上限 */
+export const SUBJECT_APPEARANCE_COVER_PROMPT_MAX = 420;
+
+/**
+ * 独立封面：以主角 + 人物形象描述为主，保留竖屏外宣版式与留白规则；不再使用切片标题/切口命题。
+ */
+export function buildPortraitCoverPromptSnippet(opts: {
+  subject?: string | null;
+  subjectAppearance: string;
+  dynasty?: string | null;
+  /** 与【画风】【造型锚点】一致，避免首行写死「电影感」与动漫预设冲突 */
+  stylePreset: StylePreset;
+}): string {
+  const protagonist = anchorSubjectLabelForImage(opts.subject);
+  const app = safePromptInline(
+    opts.subjectAppearance,
+    SUBJECT_APPEARANCE_COVER_PROMPT_MAX,
+  );
+  const frameCue =
+    opts.stylePreset === "cinematic" ?
+      "电影感单帧，镜头与光影偏剧情片静帧。"
+    : "动漫插画单帧，勿做成真人剧照硬套二次元。";
+  const lines: string[] = [];
+
+  lines.push(
+    `【封面图｜竖屏外宣】唯一视觉中心「${protagonist}」。${frameCue}人物外形须与下文「人物形象」一致，忌泛古代脸谱化。`,
+  );
+
+  lines.push(
+    [
+      "【版式｜人物居左】竖幅列表首帧。",
+      "**主角全身或胸像至可见下身，横向约占画幅宽度 ≤40%**；人物与关键道具靠左，脸与视线可略朝右；忌顶天立地居中。",
+      "**右侧为低密度留白**：极浅纯色/极淡渐变/轻肌理；勿人脸、手或其它主体；勿抢眼景物或大块几何。",
+      "**留白区禁可读文字、Logo、伪字、徽记**；**画面上方约 20% 高度内须更干净**，便于叠 UI/标题。",
+    ].join(""),
+  );
+
+  lines.push(`【人物形象】须如实体现：${app}`);
+
+  const dyn = opts.dynasty?.trim();
+  if (dyn) {
+    lines.push(
+      `【时代服饰】须符合「${safePromptInline(dyn, 48)}」的常见冠服与器物气质；勿混用其它朝代典型装束。`,
+    );
+  }
+
+  lines.push(
+    "【禁止内嵌字】全画面不得出现可读汉字、字母、数字贴片、水印、logo、匾额对联等；不留空白字框。构图适配竖屏首帧裁剪。",
+  );
+
+  return lines.join("\n");
 }
 
 /** 封面：竖屏外宣底图；纯画面无内嵌字；版式为人物居左、右侧留白（供后期叠字） */
@@ -41,7 +96,7 @@ export function buildCoverBaseOnlyPromptSnippet(opts: {
   const lines: string[] = [];
 
   lines.push(
-    `【封面底图｜竖屏外宣】唯一视觉中心「${protagonist}」。电影感单帧，忌泛古代肖像或与命题无关的场面。`,
+    `【封面图｜竖屏外宣】唯一视觉中心「${protagonist}」。电影感单帧，忌泛古代肖像或与命题无关的场面。`,
   );
 
   lines.push(
@@ -94,11 +149,6 @@ export function clipNarrationForImagePrompt(n?: string | null): string {
   return `${t.slice(0, NARRATION_IN_IMAGE_PROMPT_MAX)}…`;
 }
 
-/** 独立封面尾缀：画风与成片用途（命题已在上方分段给出） */
-export function standaloneCoverVisualGuide(stylePreset: string): string {
-  return `【画风与成片】「${stylePreset}」；光影与戏剧张力贴合上文命题；可作信息流列表首帧。`;
-}
-
 /** 与本镜 narration 对齐的说明片段（可无） */
 export function narrationCoherenceSnippet(narration?: string | null): string {
   const clip = clipNarrationForImagePrompt(narration);
@@ -145,7 +195,7 @@ export const IMAGE_SCENE_CAST_HINT =
   "【场面调度】紧随其后的分镜画面若写到敌军、部属、人群、对峙、远景营阵或环境纵深，须按描述取景构图，勿擅自缩成仅主角单人肖像特写（除非分镜明确如此）；主角朝代服饰气质仍须一致。";
 
 export function buildScene1OpeningPrompt(): string {
-  return "【正片第 1 镜｜叙事开场】承接 hook 后的第一个可见画面；**非**外宣独立封面（封面请用「生成封面底图」单独出图）。";
+  return "【正片第 1 镜｜叙事开场】承接 hook 后的第一个可见画面；**非**外宣独立封面（封面请用「生成封面图」单独出图）。";
 }
 
 export function buildFollowSceneImg2ImgLead(sceneIndex: number): string {

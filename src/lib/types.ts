@@ -103,15 +103,19 @@ export interface AssetJob {
   provider: "openai";
 }
 
-export type StylePreset =
-  | "ink"
-  | "gongbi"
-  | "cinematic"
-  | "docu"
-  | "watercolor";
+export type StylePreset = "anime" | "cinematic";
 
 /** 创作中心「推荐切面」单条 */
 export interface SliceSuggestion {
   title: string;
   angle: string;
+}
+
+/** 创作中心「AI 推荐相关人物」单条 */
+export interface CharacterSuggestion {
+  name: string;
+  /** 结合系列题眼的视觉锚点，供分镜/文生图参考 */
+  appearance: string;
+  /** 时代/政局短标签，对应界面「朝代/背景」 */
+  dynasty: string;
 }

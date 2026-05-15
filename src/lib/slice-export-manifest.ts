@@ -67,7 +67,7 @@ type AssetLike = {
 };
 
 const DEFAULT_NOTES =
-  "本包用于外部剪辑：按 scenes 顺序结合 narration / visualDescription；manifest.voiceoverFullText 为整稿口播全文（若有）。封面为独立竖屏外宣底图，可与镜 1 不同。静帧落盘 stem 形如 {projectSeed}-scene-img-镜号，逐镜口播 TTS 为 {projectSeed}-scene-audio-镜号；重复保存为 stem-2、stem-3… 不覆盖；导出资源时静帧默认拉取远程 URL，音频仅扫描本地已落盘文件写入 manifest。";
+  "本包用于外部剪辑：按 scenes 顺序结合 narration / visualDescription；manifest.voiceoverFullText 为整稿口播全文（若有）。封面为独立竖屏外宣图，可与镜 1 不同。静帧落盘 stem 形如 {projectSeed}-scene-img-镜号，逐镜口播 TTS 为 {projectSeed}-scene-audio-镜号；重复保存为 stem-2、stem-3… 不覆盖；导出资源时静帧默认拉取远程 URL，音频仅扫描本地已落盘文件写入 manifest。";
 
 export function buildSliceExportBundlePayload(params: {
   projectSeed: string;

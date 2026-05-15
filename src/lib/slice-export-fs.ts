@@ -21,7 +21,8 @@ function formatRemoteFetchError(err: Error): string {
     depth++;
   }
   const joined = segments.join(" · ");
-  const codeStr = codes.size ? ` [${[...codes].join(", ")}]` : "";
+  const codeStr =
+    codes.size ? ` [${Array.from(codes).join(", ")}]` : "";
   const hint =
     /certificate|TLS|SSL|UNABLE_TO_VERIFY/i.test(joined) ?
       " 提示：多为 TLS/证书校验问题，可检查本机代理或系统时间。"

@@ -20,6 +20,7 @@ import type {
   VideoDurationMin,
 } from "@/lib/types";
 import type { StoryboardChunkMode } from "@/lib/storyboard-llm-budget";
+import { normalizeStylePreset } from "@/lib/prompts/image-prompts";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -129,7 +130,7 @@ export async function POST(req: Request) {
     seriesTitle: String(body.seriesTitle ?? ""),
     sliceTitle: String(body.sliceTitle ?? ""),
     sliceAngle: String(body.sliceAngle ?? ""),
-    stylePreset: body.stylePreset ?? "ink",
+    stylePreset: normalizeStylePreset(body.stylePreset),
     videoDurationMin: body.videoDurationMin ?? 1,
     storyboardChunkMode: body.storyboardChunkMode ?? "auto",
     tone: body.tone ?? "narrative",

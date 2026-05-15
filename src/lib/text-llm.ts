@@ -5,6 +5,7 @@ import {
 } from "@/lib/llm-profiles";
 import { parseStoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { generateStoryboardWithProfile } from "@/lib/storyboard-orchestrator";
+import { STYLE_PRESET_LABEL_ZH, normalizeStylePreset } from "@/lib/prompts/image-prompts";
 import type {
   GenerationResult,
   LlmMessagesDebug,
@@ -21,6 +22,7 @@ export async function generateWithTextLlm(params: {
   sliceAngle?: string;
   subject: string;
   dynasty?: string;
+  subjectAppearance?: string;
   tone: Tone;
   stylePreset: string;
   videoDurationMin?: VideoDurationMin;
@@ -48,14 +50,17 @@ export async function generateWithTextLlm(params: {
     typeof params.seriesTitle === "string" ? params.seriesTitle.trim() : "";
   const seriesNormalized = raw || undefined;
 
+  const preset = normalizeStylePreset(params.stylePreset);
+
   const promptParams = {
     seriesTitle: seriesNormalized,
     sliceTitle: params.sliceTitle,
     sliceAngle: params.sliceAngle,
     subject: params.subject,
     dynasty: params.dynasty,
+    subjectAppearance: params.subjectAppearance,
     tone: params.tone,
-    stylePreset: params.stylePreset,
+    stylePreset: STYLE_PRESET_LABEL_ZH[preset],
     videoDurationMin,
     profileId: params.profileId,
   };

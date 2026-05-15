@@ -9,6 +9,7 @@ import {
   resolveApiKeyForMediaProfile,
   type TextToImageProfileRow,
 } from "@/lib/media-profiles";
+import { normalizeStylePreset } from "@/lib/prompts/image-prompts";
 import type { StylePreset } from "@/lib/types";
 
 function seedFromString(s: string): number {
@@ -193,9 +194,9 @@ async function volcengineSeedream(params: {
 export type GenerateSceneImageParams = {
   sceneIndex: number;
   visualDescription: string;
-  /** 仅出独立外宣封面（sceneIndex 应为 0）；与正片镜 1 脱钩 */
+  /** 仅出独立外宣封面（sceneIndex 应为 0）；依据人物形象描述与画风，与正片镜 1 脱钩 */
   standaloneCover?: boolean;
-  /** 封面底图：系列／切片标题／切片说明（说明优先，无内嵌字） */
+  /** 封面相关（旧字段）：非独立封面或兼容时可传；独立封面以 subjectAppearance 为主 */
   seriesTitle?: string | null;
   sliceTitle?: string | null;
   sliceAngle?: string | null;
@@ -207,6 +208,8 @@ export type GenerateSceneImageParams = {
   /** 人物/对象，用于封面定锚与连贯提示 */
   subject?: string | null;
   dynasty?: string | null;
+  /** 独立封面：人物形象描述（竖屏外宣底图） */
+  subjectAppearance?: string | null;
   /** 公网可访问的参考图 URL（上一镜或封面）；镜号>1 且模型支持时启用图生图 */
   referenceImageUrl?: string | null;
   /** 供提示词与回包说明：reference 来自上一镜还是封面兜底 */
@@ -245,9 +248,10 @@ export async function generateSceneImage(
   }
 
   const driver = profile.driver as ImageProfileDriver;
+  const stylePreset = normalizeStylePreset(params.stylePreset);
   const plan = planImageCoherencePrompt({
     sceneIndex: params.sceneIndex,
-    stylePreset: params.stylePreset,
+    stylePreset,
     visualDescription: params.visualDescription,
     standaloneCover: params.standaloneCover,
     seriesTitle: params.seriesTitle,
@@ -256,6 +260,7 @@ export async function generateSceneImage(
     narration: params.narration,
     subject: params.subject,
     dynasty: params.dynasty,
+    subjectAppearance: params.subjectAppearance,
     referenceImageUrl: params.referenceImageUrl,
     referenceRole: params.referenceRole,
     driver,
@@ -268,11 +273,10 @@ export async function generateSceneImage(
 
   if (
     params.standaloneCover &&
-    params.referenceImageUrl?.trim() &&
-    !refUrl
+    params.referenceImageUrl?.trim()
   ) {
     throw new Error(
-      "「按参考图重生封面」需要当前文生图档案支持图生图（如通义万相、火山 Seedream）。OpenAI DALL·E 等纯文生图无法使用上传的参考图，请在页顶切换档案。",
+      "独立封面已改为仅依据人物形象与画风文生，不再支持参考图。镜号大于 1 的分镜仍可使用上一镜或封面作图生图参考。",
     );
   }
 

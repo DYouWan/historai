@@ -9,12 +9,12 @@ import {
   buildCharacterRecommendUserPrompt,
   buildSliceRecommendUserPrompt,
 } from "@/lib/prompts/user-templates";
-import {
-  buildSuggestNarrativeDurationUserPrompt,
-  SUGGEST_NARRATIVE_DURATION_SYSTEM,
-  snapVideoDurationMin,
-} from "@/lib/prompts/suggest-narrative-duration-prompt";
-import type { LlmMessagesDebug, SliceSuggestion, VideoDurationMin } from "@/lib/types";
+import type {
+  CharacterSuggestion,
+  LlmMessagesDebug,
+  SliceSuggestion,
+  VideoDurationMin,
+} from "@/lib/types";
 
 export class LlmNotConfiguredError extends Error {
   constructor(message: string) {
@@ -86,7 +86,7 @@ export async function fetchThemeCharacters(params: {
   profileId?: string | null;
   seriesTitle: string;
   excludeNames?: string[];
-}): Promise<{ characters: string[]; promptDebug: LlmMessagesDebug }> {
+}): Promise<{ characters: CharacterSuggestion[]; promptDebug: LlmMessagesDebug }> {
   const file = loadLlmProfilesFile();
   const profile = pickProfile(file, params.profileId);
   const key = resolveApiKeyForProfile(profile);
@@ -124,15 +124,26 @@ export async function fetchThemeCharacters(params: {
 
   const raw = parsed.characters;
   const list = Array.isArray(raw) ? raw : [];
-  const trimmed = list.map((x) => String(x ?? "").trim()).filter(Boolean);
 
-  const characters: string[] = [];
+  const characters: CharacterSuggestion[] = [];
   const seen = new Set<string>();
-  for (const name of trimmed) {
+  for (const row of list) {
+    let name = "";
+    let appearance = "";
+    let dynasty = "";
+    if (typeof row === "string") {
+      name = row.trim();
+    } else if (row && typeof row === "object") {
+      const o = row as { name?: unknown; appearance?: unknown; dynasty?: unknown };
+      name = String(o.name ?? "").trim();
+      appearance = String(o.appearance ?? "").trim();
+      dynasty = String(o.dynasty ?? "").trim();
+    }
+    if (!name) continue;
     if (excludeSet.has(name)) continue;
     if (seen.has(name)) continue;
     seen.add(name);
-    characters.push(name);
+    characters.push({ name, appearance, dynasty });
     if (characters.length >= 12) break;
   }
 
@@ -154,6 +165,8 @@ export async function fetchCharacterSlices(params: {
   seriesTitle: string;
   characterName: string;
   excludeTitles?: string[];
+  /** 成片目标时长档位，写入推荐 user 提示以约束切口体量 */
+  videoDurationMin?: VideoDurationMin;
 }): Promise<{ suggestions: SliceSuggestion[]; promptDebug: LlmMessagesDebug }> {
   const file = loadLlmProfilesFile();
   const profile = pickProfile(file, params.profileId);
@@ -174,6 +187,7 @@ export async function fetchCharacterSlices(params: {
     params.seriesTitle,
     params.characterName,
     excludeSet.size ? Array.from(excludeSet) : undefined,
+    params.videoDurationMin,
   );
 
   const { text, promptDebug } = await chatCompletionText({
@@ -213,61 +227,4 @@ export async function fetchCharacterSlices(params: {
   }
 
   return { suggestions: cleaned, promptDebug };
-}
-
-export async function fetchSuggestedNarrativeDuration(params: {
-  profileId?: string | null;
-  seriesTitle: string;
-  subject: string;
-  sliceTitle: string;
-  sliceAngle: string;
-  dynasty?: string;
-}): Promise<{
-  videoDurationMin: VideoDurationMin;
-  rationale: string;
-  promptDebug: LlmMessagesDebug;
-}> {
-  const file = loadLlmProfilesFile();
-  const profile = pickProfile(file, params.profileId);
-  const key = resolveApiKeyForProfile(profile);
-  if (!key) {
-    throw new LlmNotConfiguredError(
-      `当前档案「${profile.label}」需在环境变量 ${profile.apiKeyEnv.trim()} 中配置 API 密钥后，才可使用「估算叙事档位」。`,
-    );
-  }
-
-  const user = buildSuggestNarrativeDurationUserPrompt({
-    seriesTitle: params.seriesTitle.trim(),
-    subject: params.subject.trim(),
-    sliceTitle: params.sliceTitle.trim(),
-    sliceAngle: params.sliceAngle.trim(),
-    dynasty: params.dynasty?.trim(),
-  });
-
-  const { text, promptDebug } = await chatCompletionText({
-    profile,
-    key,
-    system: SUGGEST_NARRATIVE_DURATION_SYSTEM,
-    user,
-    temperature: 0.35,
-    maxTokens: 256,
-  });
-
-  let parsed: { videoDurationMin?: unknown; rationale?: unknown };
-  try {
-    parsed = JSON.parse(text) as { videoDurationMin?: unknown; rationale?: unknown };
-  } catch {
-    throw new Error("模型输出不是合法 JSON");
-  }
-
-  const videoDurationMin = snapVideoDurationMin(parsed.videoDurationMin);
-  const rationale = String(parsed.rationale ?? "").trim().slice(0, 200);
-
-  return {
-    videoDurationMin,
-    rationale:
-      rationale ||
-      `已选 ${videoDurationMin} 分钟档位（模型未返回理由，可直接重试估算）。`,
-    promptDebug,
-  };
 }
