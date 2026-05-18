@@ -1,5 +1,12 @@
 import { mkdir, readdir, unlink, writeFile } from "fs/promises";
 import path from "path";
+import { sanitizeExportSegment } from "@/lib/slice-export-naming";
+
+export {
+  buildCoverImageFileStem,
+  buildSliceExportFolderName,
+  sanitizeExportSegment,
+} from "@/lib/slice-export-naming";
 
 const SLICE_REMOTE_FETCH_UA = "HistorAI/1.0 (save-slice-image)";
 
@@ -82,23 +89,6 @@ export const SLICE_EXPORT_ROOT = "slice-exports";
 
 const IMG_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const AUD_EXT = new Set([".mp3", ".wav", ".m4a", ".aac"]);
-
-export function sanitizeExportSegment(s: string, max: number): string {
-  const t = s
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
-  return t || "untitled";
-}
-
-export function buildSliceExportFolderName(
-  subject: string,
-  title: string,
-): string {
-  const folderTitle = title.trim() || "未命名标题";
-  return `${sanitizeExportSegment(subject.trim(), 48)}_${sanitizeExportSegment(folderTitle, 80)}`;
-}
 
 function extFromImageResponse(
   contentType: string | null,

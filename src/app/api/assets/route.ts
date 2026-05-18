@@ -30,6 +30,8 @@ type AssetsBody = {
   subjectAppearance?: string | null;
   referenceImageUrl?: string | null;
   referenceRole?: "previous" | "cover" | null;
+  /** 同镜多关键帧：1 为主静图（默认），≥2 时须 sceneIndex≥1 且非独立封面 */
+  keyframeIndex?: number;
 };
 
 export async function POST(req: Request) {
@@ -104,6 +106,43 @@ export async function POST(req: Request) {
       );
     }
 
+    let keyframeIndex = 1;
+    if (!body.standaloneCover) {
+      const ki =
+        body.keyframeIndex === undefined || body.keyframeIndex === null ?
+          1
+        : Math.floor(Number(body.keyframeIndex));
+      if (!Number.isFinite(ki) || ki < 1 || ki > 4) {
+        await appendLlmDebugLog({
+          requestId,
+          route: "POST /api/assets",
+          meta: { phase: "validation", keyframeIndex: body.keyframeIndex },
+          promptDebug: buildImageGenerationPromptDebug({
+            error: "keyframeIndex 须在 1～4",
+          }),
+        });
+        return NextResponse.json(
+          { error: "keyframeIndex 须在 1～4" },
+          { status: 400, headers: jsonHeaders },
+        );
+      }
+      keyframeIndex = ki;
+      if (keyframeIndex > 1 && !body.referenceImageUrl?.trim()) {
+        await appendLlmDebugLog({
+          requestId,
+          route: "POST /api/assets",
+          meta: { phase: "validation", keyframeIndex },
+          promptDebug: buildImageGenerationPromptDebug({
+            error: "关键帧≥2 出图须传 referenceImageUrl（同镜前一关键帧）",
+          }),
+        });
+        return NextResponse.json(
+          { error: "关键帧≥2 出图须传 referenceImageUrl（同镜前一关键帧）" },
+          { status: 400, headers: jsonHeaders },
+        );
+      }
+    }
+
     const seed =
       body.projectSeed?.trim() ||
       `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -126,6 +165,7 @@ export async function POST(req: Request) {
       subjectAppearance: body.subjectAppearance?.trim() || undefined,
       referenceImageUrl: body.referenceImageUrl,
       referenceRole: body.referenceRole,
+      keyframeIndex,
     });
 
     const { log, ...publicOut } = out;
@@ -135,6 +175,7 @@ export async function POST(req: Request) {
       route: "POST /api/assets",
       meta: {
         sceneIndex: body.sceneIndex,
+        keyframeIndex,
         standaloneCover: Boolean(body.standaloneCover),
         profileId: out.profileId,
         provider: out.provider,

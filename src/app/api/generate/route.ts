@@ -36,9 +36,7 @@ export async function POST(req: Request) {
       spineSnapshot?: StoryboardSpineSnapshot;
       voiceoverFullTextOverride?: string;
       voiceoverParagraphsOverride?: string[];
-      /** 为 true 且非「仅扩写」请求时，只生成到整稿口播（L1+L2） */
-      stopAfterVoiceover?: boolean;
-      /** 仅 L1 叙事骨架 */
+      /** 仅 L1 叙事方案 */
       stopAfterSpine?: boolean;
       /** 仅 L2：须带 spineSnapshot */
       generateVoiceoverOnly?: boolean;
@@ -80,7 +78,6 @@ export async function POST(req: Request) {
       spineSnapshot: body.spineSnapshot,
       voiceoverFullTextOverride: body.voiceoverFullTextOverride,
       voiceoverParagraphsOverride: body.voiceoverParagraphsOverride,
-      stopAfterVoiceover: body.stopAfterVoiceover === true,
       stopAfterSpine: body.stopAfterSpine === true,
       generateVoiceoverOnly: body.generateVoiceoverOnly === true,
       llmRequestId: requestId,
@@ -98,7 +95,6 @@ export async function POST(req: Request) {
         storyboardChunkMode,
         provider: result.provider,
         regenerateFromVoiceover,
-        stopAfterVoiceover: body.stopAfterVoiceover === true,
         stopAfterSpine: body.stopAfterSpine === true,
         generateVoiceoverOnly: body.generateVoiceoverOnly === true,
         pipelinePending: result.pipelinePending ?? null,

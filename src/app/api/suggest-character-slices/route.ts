@@ -4,6 +4,7 @@ import {
   llmRequestIdHeaders,
 } from "@/lib/llm-request-logger";
 import {
+  LlmAssistError,
   LlmNotConfiguredError,
   fetchCharacterSlices,
 } from "@/lib/theme-assist-llm";
@@ -14,6 +15,9 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   const requestId = createLlmRequestId();
+  let profileId: string | undefined;
+  let seriesTitle = "";
+  let characterName = "";
   try {
     const body = (await req.json()) as {
       profileId?: string;
@@ -24,7 +28,8 @@ export async function POST(req: Request) {
       videoDurationMin?: unknown;
     };
 
-    const seriesTitle =
+    profileId = body.profileId;
+    seriesTitle =
       typeof body.seriesTitle === "string" ? body.seriesTitle.trim() : "";
     if (!seriesTitle) {
       return NextResponse.json(
@@ -32,7 +37,8 @@ export async function POST(req: Request) {
         { status: 400, headers: llmRequestIdHeaders(requestId) },
       );
     }
-    if (!body.characterName?.trim()) {
+    characterName = body.characterName?.trim() ?? "";
+    if (!characterName) {
       return NextResponse.json(
         { error: "请填写或选择人物/对象" },
         { status: 400, headers: llmRequestIdHeaders(requestId) },
@@ -51,7 +57,7 @@ export async function POST(req: Request) {
     const { suggestions, promptDebug } = await fetchCharacterSlices({
       profileId: body.profileId,
       seriesTitle,
-      characterName: body.characterName.trim(),
+      characterName,
       videoDurationMin,
       ...(excludeTitles.length ? { excludeTitles } : {}),
     });
@@ -63,7 +69,7 @@ export async function POST(req: Request) {
       meta: {
         profileId: body.profileId ?? null,
         seriesTitle,
-        characterName: body.characterName.trim(),
+        characterName,
         suggestionCount: suggestions.length,
         excludeTitleCount: excludeTitles.length,
         videoDurationMin,
@@ -82,6 +88,20 @@ export async function POST(req: Request) {
       );
     }
     const message = e instanceof Error ? e.message : "推荐失败";
+    if (e instanceof LlmAssistError && e.promptDebug) {
+      await appendLlmDebugLog({
+        requestId,
+        route: "POST /api/suggest-character-slices",
+        promptDebug: e.promptDebug,
+        meta: {
+          profileId: profileId ?? null,
+          seriesTitle,
+          characterName,
+          failed: true,
+          error: message,
+        },
+      });
+    }
     return NextResponse.json(
       { error: message },
       { status: 502, headers: llmRequestIdHeaders(requestId) },

@@ -5,7 +5,6 @@ import {
 } from "@/lib/llm-profiles";
 import { parseStoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { generateStoryboardWithProfile } from "@/lib/storyboard-orchestrator";
-import { STYLE_PRESET_LABEL_ZH, normalizeStylePreset } from "@/lib/prompts/image-prompts";
 import type {
   GenerationResult,
   LlmMessagesDebug,
@@ -16,7 +15,6 @@ import type {
 
 export async function generateWithTextLlm(params: {
   profileId?: string | null;
-  /** 人物向系列名称（可空） */
   seriesTitle?: string;
   sliceTitle?: string;
   sliceAngle?: string;
@@ -26,19 +24,12 @@ export async function generateWithTextLlm(params: {
   tone: Tone;
   stylePreset: string;
   videoDurationMin?: VideoDurationMin;
-  /** 分块策略：auto=按档案阈值决定是否切段；on=强制切段（旧值 off 会被当作 auto） */
   storyboardChunkMode?: string;
-  /** 与 voiceoverFullTextOverride（或段落数组）同时传入时仅跑分镜扩写（L3） */
   spineSnapshot?: StoryboardSpineSnapshot | null;
   voiceoverFullTextOverride?: string | null;
   voiceoverParagraphsOverride?: string[] | null;
-  /** 首次生成仅 L1+L2，确认口播后再请求扩写 */
-  stopAfterVoiceover?: boolean;
-  /** 首次仅 L1 叙事骨架 */
   stopAfterSpine?: boolean;
-  /** 在已有叙事骨架快照上仅跑 L2 */
   generateVoiceoverOnly?: boolean;
-  /** 与 `/api/generate` 响应头一致；L1 解析失败时写入 `.llm-read.md` */
   llmRequestId?: string;
 }): Promise<{ result: GenerationResult; promptDebug: LlmMessagesDebug }> {
   const file = loadLlmProfilesFile();
@@ -50,17 +41,13 @@ export async function generateWithTextLlm(params: {
     typeof params.seriesTitle === "string" ? params.seriesTitle.trim() : "";
   const seriesNormalized = raw || undefined;
 
-  const preset = normalizeStylePreset(params.stylePreset);
-
   const promptParams = {
     seriesTitle: seriesNormalized,
     sliceTitle: params.sliceTitle,
     sliceAngle: params.sliceAngle,
     subject: params.subject,
     dynasty: params.dynasty,
-    subjectAppearance: params.subjectAppearance,
     tone: params.tone,
-    stylePreset: STYLE_PRESET_LABEL_ZH[preset],
     videoDurationMin,
     profileId: params.profileId,
   };
@@ -81,7 +68,6 @@ export async function generateWithTextLlm(params: {
     spineSnapshot: params.spineSnapshot ?? undefined,
     voiceoverFullTextOverride: params.voiceoverFullTextOverride ?? undefined,
     voiceoverParagraphsOverride: params.voiceoverParagraphsOverride ?? undefined,
-    stopAfterVoiceover: params.stopAfterVoiceover === true,
     stopAfterSpine: params.stopAfterSpine === true,
     generateVoiceoverOnly: params.generateVoiceoverOnly === true,
     llmRequestId: params.llmRequestId,

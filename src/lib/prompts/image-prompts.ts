@@ -8,6 +8,8 @@ import type { StylePreset } from "@/lib/types";
 export const STYLE_SNIPPET: Record<StylePreset, string> = {
   anime:
     "anime historical key visual, clean linework, cel or soft digital paint, controlled saturation",
+  anime_modern:
+    "refined Chinese fantasy character illustration, semi-realistic adult proportions, delicate brushwork, cinematic side lighting, intricate costume and hair ornaments, wooden ancient architecture, political drama mood, not chibi not flat cel anime",
   cinematic: "cinematic lighting, 35mm still, shallow depth of field",
 };
 
@@ -15,17 +17,32 @@ export const STYLE_SNIPPET: Record<StylePreset, string> = {
 export const STYLE_ANCHOR_ZH: Record<StylePreset, string> = {
   anime:
     "动漫插画：略二次元比例、线稿干净、赛璐璐或轻厚涂；饱和适中、高光明确；衣冠简化但具时代感。",
+  anime_modern:
+    "精品古风人物插画：成人比例、五官立体冷峻、服饰发冠纹样细腻；侧光塑造面部层次；木质古建/权谋史诗氛围；笔触细腻高级感；勿Q版、勿廉价扁平赛璐璐二次元番剧脸。",
   cinematic: "电影质感：侧光或自然光、肤色与环境分离、写实材质与景深。",
 };
 
 /** 写入叙事/分镜提示的人类可读画风名（与 UI 下拉一致） */
 export const STYLE_PRESET_LABEL_ZH: Record<StylePreset, string> = {
   anime: "动漫插画",
+  anime_modern: "古风插画",
   cinematic: "电影质感",
 };
 
-/** 请求体或旧 manifest 中可能含已下线预设，统一收敛为当前支持的两种 */
+/** 请求体或旧 manifest 中可能含已下线预设，统一收敛为当前支持的三种 */
 export function normalizeStylePreset(v: unknown): StylePreset {
   const s = typeof v === "string" ? v.trim().toLowerCase() : "";
-  return s === "cinematic" ? "cinematic" : "anime";
+  if (s === "cinematic") return "cinematic";
+  if (
+    s === "anime_modern" ||
+    s === "anime-modern" ||
+    s === "anime modern" ||
+    s === "动漫插画-现代" ||
+    s === "动漫插画现代" ||
+    s === "古风插画" ||
+    s === "精品古风插画"
+  ) {
+    return "anime_modern";
+  }
+  return "anime";
 }

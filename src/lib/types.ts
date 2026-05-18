@@ -5,13 +5,33 @@ export type Tone = "serious" | "narrative";
 /** 叙事目标时长（分钟）：决定主生成提示中的镜数与总时长硬约束 */
 export type VideoDurationMin = 1 | 3 | 5 | 8 | 10 | 12 | 15;
 
-/** 流水线未完成阶段：仅有叙事骨架待整稿；已有整稿待分镜扩写 */
+/** 流水线未完成阶段：仅有 L1 待整稿；已有整稿待 L3 */
 export type StoryboardPipelinePending = "voiceover" | "scenes";
 
-export interface TimelineBeat {
+/** L1 故事弧：开场 + 里程碑 + 唯一高峰 + 收束 */
+export interface StoryArcMilestone {
   label?: string;
-  text: string;
-  sources: string[];
+  intent: string;
+  sceneRange?: string;
+  sources?: string[];
+}
+
+export interface StoryArc {
+  opening: string;
+  milestones: StoryArcMilestone[];
+  peak: {
+    label: string;
+    intent: string;
+    sceneRange?: string;
+    sources?: string[];
+  };
+  closing: string;
+}
+
+/** L1 附件：发布前核对 */
+export interface ReviewChecklist {
+  factsToVerify: string[];
+  publishCautions?: string | null;
 }
 
 export interface StoryboardScene {
@@ -21,43 +41,34 @@ export interface StoryboardScene {
   durationSec: number;
 }
 
-/** L1 叙事骨架单条；与整稿口播按镜对齐 */
+/** L1 镜序表单条；与整稿口播按镜对齐 */
 export interface SceneSkeletonEntry {
   index: number;
   beat: string;
   durationSec: number;
 }
 
-/** 客户端带回：仅重跑分镜扩写（L3）时提交上次生成的叙事骨架快照 */
+/** 客户端带回：L2 仅生成口播或 L3 按稿扩写时提交 L1 快照 */
 export interface StoryboardSpineSnapshot {
-  hook: string;
-  timeline: TimelineBeat[];
+  storyArc: StoryArc;
   sceneSkeleton: SceneSkeletonEntry[];
-  factNotes: string[];
-  complianceNote?: string | null;
+  reviewChecklist: ReviewChecklist;
 }
 
 export interface GenerationResult {
-  hook: string;
-  timeline: TimelineBeat[];
+  storyArc: StoryArc;
   scenes: StoryboardScene[];
-  factNotes: string[];
-  complianceNote?: string;
-  /** L2 整稿口播（顺读主干）；段落之间可与 voiceoverParagraphs 用空行对应 */
+  reviewChecklist: ReviewChecklist;
   voiceoverFullText: string;
-  /** 与镜号 1…N 一一对应的口播母稿段落 */
   voiceoverParagraphs: string[];
-  /** L1 快照，供「按稿重出分镜」回传 */
   sceneSkeleton: SceneSkeletonEntry[];
   /**
-   * voiceover：仅有 L1 叙事骨架，待生成整稿口播；
-   * scenes：已有整稿，待 L3 扩写分镜（scenes 仍为空）。
+   * voiceover：仅有 L1，待 L2；
+   * scenes：已有整稿，待 L3（scenes 仍为空）。
    * 有分镜后应为 undefined。
    */
   pipelinePending?: StoryboardPipelinePending;
-  /** 在线大模型生成结果 */
   provider: "llm";
-  /** 本次生成使用的模型档案 */
   llmProfile?: {
     id: string;
     vendor: string;
@@ -87,11 +98,8 @@ export interface LlmMessagesDebug {
   chatCompletionsUrl: string;
   temperature: number;
   usesJsonResponseFormat: boolean;
-  /** 模型返回的 assistant 正文（通常为 JSON 字符串），与 prompts 拆分前的原始一致 */
   assistantRaw?: string;
-  /** 分块生成时各阶段明细（仅当阶段数 > 1 时写入，避免与根级 system/user 重复） */
   phases?: LlmDebugPhase[];
-  /** 人类可读：单次 / 分块及 max_tokens 策略摘要 */
   storyboardStrategy?: string;
 }
 
@@ -103,19 +111,15 @@ export interface AssetJob {
   provider: "openai";
 }
 
-export type StylePreset = "anime" | "cinematic";
+export type StylePreset = "anime" | "anime_modern" | "cinematic";
 
-/** 创作中心「推荐切面」单条 */
 export interface SliceSuggestion {
   title: string;
   angle: string;
 }
 
-/** 创作中心「AI 推荐相关人物」单条 */
 export interface CharacterSuggestion {
   name: string;
-  /** 结合系列题眼的视觉锚点，供分镜/文生图参考 */
   appearance: string;
-  /** 时代/政局短标签，对应界面「朝代/背景」 */
   dynasty: string;
 }

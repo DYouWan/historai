@@ -7,26 +7,34 @@ import type { VideoDurationMin } from "@/lib/types";
 import { VIDEO_DURATION_PRESETS } from "@/lib/video-duration";
 
 /**
- * 推荐人物 - User Prompt（系列名 + 任务；规则见 CHAR_SYSTEM）
- * @param excludeNames 上一轮已在界面展示过的人选，须从本次输出中排除（逐字一致）
+ * 内置系列轴线单行：【本系列轴线】题眼：…（axisHint 已含「题眼：」前缀）
+ * @param labelSuffix 紧挨「】」后的补充说明（② 形象阶段用），与题眼之间留一空格外显
  */
-export function buildCharacterRecommendUserPrompt(
+function themeAxisUserLine(
   seriesTitle: string,
-  excludeNames?: string[],
+  labelSuffix?: string,
 ): string {
-  const theme = seriesTitle.trim();
-  const axis = themeAxisHintForSeries(theme);
-  const axisBlock =
-    axis ?
-      `
-【本系列轴线】（仅用于筛选人选与外形气质侧重，勿写入 appearance 的场景背景）
-${axis}`
-    : "";
+  const axis = themeAxisHintForSeries(seriesTitle.trim());
+  if (!axis?.trim()) return "";
+  const suffix = labelSuffix?.trim() ?? "";
+  const head = suffix ? `【本系列轴线】${suffix} ` : "【本系列轴线】";
+  return `\n${head}${axis.trim()}`;
+}
 
-  const head = `人物向系列名称：「${theme}」${axisBlock}
----
-请生成本系列相关历史人物列表（8～12 个，name 互不重复）；每人须含 **appearance**（人物外形；其中面部用至多一句写眉目/须发或脸型轮廓之一，勿空泛套话）与 **dynasty**（时代短标签）；系列名仅帮助推导形象与时代，**appearance 勿写地点、战场、事件场面**。`;
+/** ① 人选：轴线仅辅助选题 */
+function characterRosterAxisBlock(seriesTitle: string): string {
+  return themeAxisUserLine(seriesTitle);
+}
 
+/** ② 批量形象：轴线仅辅助外形气质 */
+function characterAppearanceAxisBlock(seriesTitle: string): string {
+  return themeAxisUserLine(
+    seriesTitle,
+    "（仅用于各人物外形气质侧重，勿写场面或剧情）",
+  );
+}
+
+function characterRecommendExcludeBlock(excludeNames?: string[]): string {
   const cleaned = Array.from(
     new Set(
       (excludeNames ?? [])
@@ -34,14 +42,57 @@ ${axis}`
         .filter(Boolean),
     ),
   ).slice(0, 40);
-
-  if (!cleaned.length) return head;
-
+  if (!cleaned.length) return "";
   const bullets = cleaned.map((n) => `- ${n}`).join("\n");
-  return `${head}
+  return `
 
 【须排除】下列称谓不得出现在本次 characters 列表中（勿换同一人之别称重复输出）：
 ${bullets}`;
+}
+
+/**
+ * 推荐人物 ① 人选 - User Prompt（规则见 CHAR_ROSTER_SYSTEM）
+ */
+export function buildCharacterRosterUserPrompt(
+  seriesTitle: string,
+  excludeNames?: string[],
+): string {
+  const theme = seriesTitle.trim();
+  const head = `人物向系列名称：「${theme}」${characterRosterAxisBlock(theme)}
+---
+请生成本系列相关历史人物名单（8～12 个，name 互不重复）；每人仅含 **name** 与 **dynasty**（时代短标签）。`;
+  return head + characterRecommendExcludeBlock(excludeNames);
+}
+
+export type CharacterRosterRow = { name: string; dynasty: string };
+
+/**
+ * 推荐人物 ② 批量形象 - User Prompt（规则见 CHAR_APPEARANCE_SYSTEM）
+ */
+export function buildCharacterAppearanceUserPrompt(
+  seriesTitle: string,
+  roster: CharacterRosterRow[],
+): string {
+  const theme = seriesTitle.trim();
+  const table = roster
+    .map((r) => `- name：${r.name} · dynasty：${r.dynasty}`)
+    .join("\n");
+  return `人物向系列名称：「${theme}」${characterAppearanceAxisBlock(theme)}
+---
+下列人选已锁定（**不得修改 name**）。请为**每一位**写 **appearance**（25～58 字；眉/眼/须发/脸型至少一类；批内互不相同；禁套话与场面）。
+
+【锁定名单】
+${table}
+
+只输出 JSON：{"appearances":[{"name":"…","appearance":"…"}]}，条数须与名单一致，name 逐字一致。`;
+}
+
+/** @deprecated 使用 buildCharacterRosterUserPrompt + buildCharacterAppearanceUserPrompt */
+export function buildCharacterRecommendUserPrompt(
+  seriesTitle: string,
+  excludeNames?: string[],
+): string {
+  return buildCharacterRosterUserPrompt(seriesTitle, excludeNames);
 }
 
 /**
@@ -57,13 +108,7 @@ export function buildSliceRecommendUserPrompt(
 ): string {
   const theme = seriesTitle.trim();
   const ch = characterName.trim();
-  const axis = themeAxisHintForSeries(theme);
-  const axisBlock =
-    axis ?
-      `
-【本系列轴线】
-${axis}`
-    : "";
+  const axisBlock = themeAxisUserLine(theme);
 
   const preset =
     videoDurationMin != null ?
@@ -75,10 +120,13 @@ ${axis}`
 【成片叙事体量】用户选定成片目标 **${preset.labelShort}**（叙事体量约 **${preset.minScenes}～${preset.maxScenes} 镜**、总时长与单镜秒数随主流程该档位约束）：请让每条切口的 **angle 场面粒度与信息节奏** 与此体量相称；**title** 一律 **6～12 字短钩**（硬上限 14 字），勿写成百科目录或长问句。`
     : "";
 
-  const head = `人物向系列名称：「${theme}」
-核心人物/对象：「${ch}」${axisBlock}${durationBlock}
+  const head = `人物向系列名称：「${theme}」${axisBlock}
+核心人物/对象：「${ch}」${durationBlock}
 ---
-请生成峰值切片方案（6～8 条，互不重复，单点高峰；**title 优先高传播、顺口、强停划**）。只输出 JSON：{"suggestions":[{"title":"…","angle":"…"}]}`;
+请生成峰值切片方案（6～8 条，互不重复，单点高峰）。
+**title**：封面大字短钩（坦白刃/当场刀/反差刃/身份翻等），6～12 字、含「我」；切口须**「${ch}」专属名场面**，勿照抄 system 示范里的他人情节（勿批量「没爱过某帝/沉湖/一句话杀某臣」换名）。
+**angle**：1～3 句白话单场戏，承担场面与 stakes。
+输出前自检：停划、顺口、未套示例换皮。只输出 JSON：{"suggestions":[{"title":"…","angle":"…"}]}`;
 
   const cleaned = Array.from(
     new Set(

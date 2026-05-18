@@ -2,11 +2,22 @@
  * 文生图 / 图生图：封面与跟镜的中文约束与拼装片段（供 image-coherence 调度）
  */
 
+import { buildPortraitCoverPromptAnimeHistorical } from "@/lib/prompts/cover-prompts-anime-historical";
+import { buildPortraitCoverPromptAnimeModern } from "@/lib/prompts/cover-prompts-anime-modern";
+import { buildPortraitCoverPromptCinematic } from "@/lib/prompts/cover-prompts-cinematic";
+import {
+  anchorSubjectLabelForImage,
+  IMAGE_SUBJECT_FALLBACK_ANCHOR,
+  safePromptInline,
+  SUBJECT_APPEARANCE_COVER_PROMPT_MAX,
+} from "@/lib/prompts/cover-prompts-shared";
 import type { StylePreset } from "@/lib/types";
 
-/** 未填 subject 时的主角占位说明 */
-export const IMAGE_SUBJECT_FALLBACK_ANCHOR =
-  "主角（请以分镜画面描述中的具体历史人物为准，须为画面唯一视觉中心）";
+export {
+  anchorSubjectLabelForImage,
+  IMAGE_SUBJECT_FALLBACK_ANCHOR,
+  SUBJECT_APPEARANCE_COVER_PROMPT_MAX,
+};
 
 /** 切片说明可较长，封面提示里截断以免顶满厂商上限 */
 export const SLICE_ANGLE_COVER_PROMPT_MAX = 520;
@@ -14,70 +25,48 @@ export const SLICE_ANGLE_COVER_PROMPT_MAX = 520;
 /** 文生图提示里附带口播长度上限 */
 export const NARRATION_IN_IMAGE_PROMPT_MAX = 280;
 
-function safePromptInline(s: string, max: number): string {
-  return s.replace(/[\r\n"]+/g, " ").trim().slice(0, max);
-}
+/** 封面文生图 negative_prompt（DashScope 等支持时叠加） */
+export const COVER_IMAGE_NEGATIVE_PROMPT =
+  "text, letters, words, typography, Chinese characters, English text, numbers, subtitle, caption, watermark, logo, signature, plaque, couplet, calligraphy, banner, signboard, shop sign, UI overlay, speech bubble, fake text, gibberish text, title bar, headline, meme text, book page, newspaper";
 
-export function anchorSubjectLabelForImage(subject?: string | null): string {
-  const t = subject?.trim();
-  if (t) return t;
-  return IMAGE_SUBJECT_FALLBACK_ANCHOR;
-}
-
-/** 独立封面（人物形象驱动）中，外形描述写入提示的上限 */
-export const SUBJECT_APPEARANCE_COVER_PROMPT_MAX = 420;
+/** 封面硬性禁字（中英混排，放提示首尾；勿写「标题/UI/叠字」以免模型真画字） */
+export const COVER_NO_TEXT_BLOCK = [
+  "【硬性·零文字画面】输出必须是**无任何可读字形**的纯插画/摄影帧。",
+  "**严禁**：汉字、字母、数字、假字、乱码、字幕、横幅、对联、匾额、招牌、书卷文字、印章篆文、屏幕界面、水印、Logo、气泡字。",
+  "**留白区**仅允许虚化景物与柔和色块，供剪辑**后期**合成文案；**禁止在画面里预写标题、装饰字或「待填字」空框**。",
+].join("");
 
 /**
- * 独立封面：以主角 + 人物形象描述为主，保留竖屏外宣版式与留白规则；不再使用切片标题/切口命题。
+ * 独立封面：按画风预设路由到各自提示模块（历史动漫 / 现代动漫 / 电影质感）
  */
 export function buildPortraitCoverPromptSnippet(opts: {
   subject?: string | null;
   subjectAppearance: string;
   dynasty?: string | null;
-  /** 与【画风】【造型锚点】一致，避免首行写死「电影感」与动漫预设冲突 */
   stylePreset: StylePreset;
 }): string {
-  const protagonist = anchorSubjectLabelForImage(opts.subject);
-  const app = safePromptInline(
-    opts.subjectAppearance,
-    SUBJECT_APPEARANCE_COVER_PROMPT_MAX,
-  );
-  const frameCue =
-    opts.stylePreset === "cinematic" ?
-      "电影感单帧，镜头与光影偏剧情片静帧。"
-    : "动漫插画单帧，勿做成真人剧照硬套二次元。";
-  const lines: string[] = [];
-
-  lines.push(
-    `【封面图｜竖屏外宣】唯一视觉中心「${protagonist}」。${frameCue}人物外形须与下文「人物形象」一致，忌泛古代脸谱化。`,
-  );
-
-  lines.push(
-    [
-      "【版式｜人物居左】竖幅列表首帧。",
-      "**主角全身或胸像至可见下身，横向约占画幅宽度 ≤40%**；人物与关键道具靠左，脸与视线可略朝右；忌顶天立地居中。",
-      "**右侧为低密度留白**：极浅纯色/极淡渐变/轻肌理；勿人脸、手或其它主体；勿抢眼景物或大块几何。",
-      "**留白区禁可读文字、Logo、伪字、徽记**；**画面上方约 20% 高度内须更干净**，便于叠 UI/标题。",
-    ].join(""),
-  );
-
-  lines.push(`【人物形象】须如实体现：${app}`);
-
-  const dyn = opts.dynasty?.trim();
-  if (dyn) {
-    lines.push(
-      `【时代服饰】须符合「${safePromptInline(dyn, 48)}」的常见冠服与器物气质；勿混用其它朝代典型装束。`,
-    );
+  if (opts.stylePreset === "anime_modern") {
+    return buildPortraitCoverPromptAnimeModern({
+      subject: opts.subject,
+      subjectAppearance: opts.subjectAppearance,
+      dynasty: opts.dynasty,
+    });
   }
-
-  lines.push(
-    "【禁止内嵌字】全画面不得出现可读汉字、字母、数字贴片、水印、logo、匾额对联等；不留空白字框。构图适配竖屏首帧裁剪。",
-  );
-
-  return lines.join("\n");
+  if (opts.stylePreset === "cinematic") {
+    return buildPortraitCoverPromptCinematic({
+      subject: opts.subject,
+      subjectAppearance: opts.subjectAppearance,
+      dynasty: opts.dynasty,
+    });
+  }
+  return buildPortraitCoverPromptAnimeHistorical({
+    subject: opts.subject,
+    subjectAppearance: opts.subjectAppearance,
+    dynasty: opts.dynasty,
+  });
 }
 
-/** 封面：竖屏外宣底图；纯画面无内嵌字；版式为人物居左、右侧留白（供后期叠字） */
+/** 封面：竖屏外宣底图；人物居左、虚化环境背景、右侧/上方合成留白 */
 export function buildCoverBaseOnlyPromptSnippet(opts: {
   subject?: string | null;
   seriesTitle?: string | null;
@@ -100,13 +89,7 @@ export function buildCoverBaseOnlyPromptSnippet(opts: {
   );
 
   lines.push(
-    [
-      "【版式｜人物居左】竖幅信息流列表首帧。",
-      "**主角整个人物在画幅中的横向占位（从头到脚，或胸像至可见下身）不超过宽度约 40%**；人物与关键道具整体靠左，脸与视线可略朝右；忌人物过大或居中顶天立地。",
-      "**右侧余下为负形留白、信息密度须极低**：宜极浅纯色、极淡渐变或极轻阴影肌理；避免明显布褶、大团云雾、可辨几何块或抢眼景物；该区域内不要人脸、手部特写或其它主体。",
-      "**留白区内严禁任何可读文字、Logo、符号、装饰性伪字或图形徽记**（模型勿用假字填充空区）。",
-      "**留白区靠画面上方约 20% 高度内须格外干净**，以便后期列表 UI、头像或标题条叠盖。",
-    ].join(""),
+    "【版式｜人物居左】竖幅外宣首帧。（版式细则见历史向动漫封面模块，切片命题封面沿用简化表述。）",
   );
 
   if (angleClip) {
@@ -158,8 +141,13 @@ export function narrationCoherenceSnippet(narration?: string | null): string {
 
 export function buildStandaloneCoverLead(hasReference: boolean): string {
   return hasReference ?
-    "【任务】参考图重生外宣竖屏底图：保留人物相貌与衣冠主色，场景与构图按下文命题重设。"
-  : "【任务】文生外宣竖屏底图：仅依据下文命题与主角，纯画面无字。";
+    "【任务】参考图重生外宣竖屏底图：保留人物相貌与衣冠主色，场景与构图按下文命题重设；画面仍须零可读文字。"
+  : "【任务】文生外宣竖屏插画：仅人物与环境，**绝对零文字**（无字幕、无招牌、无对联、无水印）。";
+}
+
+/** 封面英文画风后缀，强化禁字（拼在【画风】行末） */
+export function coverStyleSnippetNoText(baseSnippet: string): string {
+  return `${baseSnippet}, no text, no letters, no subtitle, no watermark, no signage, no calligraphy, text-free image`;
 }
 
 export function buildCoverReferenceFigureIntro(): string {
@@ -195,7 +183,7 @@ export const IMAGE_SCENE_CAST_HINT =
   "【场面调度】紧随其后的分镜画面若写到敌军、部属、人群、对峙、远景营阵或环境纵深，须按描述取景构图，勿擅自缩成仅主角单人肖像特写（除非分镜明确如此）；主角朝代服饰气质仍须一致。";
 
 export function buildScene1OpeningPrompt(): string {
-  return "【正片第 1 镜｜叙事开场】承接 hook 后的第一个可见画面；**非**外宣独立封面（封面请用「生成封面图」单独出图）。";
+  return "【正片第 1 镜｜叙事开场】承接 storyArc.opening 后的第一个可见画面；**非**外宣独立封面（封面请用「生成封面图」单独出图）。";
 }
 
 export function buildFollowSceneImg2ImgLead(sceneIndex: number): string {

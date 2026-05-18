@@ -1,23 +1,22 @@
 import type { LlmProfileRow } from "@/lib/llm-profiles";
-import { mergeHookIntoFirstSceneNarration } from "@/lib/merge-hook-narration";
 import type {
   GenerationResult,
+  ReviewChecklist,
   SceneSkeletonEntry,
+  StoryArc,
   StoryboardPipelinePending,
   StoryboardScene,
 } from "@/lib/types";
 
 export type RawStoryboardGeneration = {
-  hook?: string;
-  timeline?: Array<{ label?: string; text?: string; sources?: string[] }>;
+  storyArc: StoryArc;
+  reviewChecklist: ReviewChecklist;
   scenes?: Array<{
     index?: number;
     visualDescription?: string;
     narration?: string;
     durationSec?: number;
   }>;
-  factNotes?: string[];
-  complianceNote?: string | null;
   voiceoverFullText?: string;
   voiceoverParagraphs?: string[];
   sceneSkeleton?: SceneSkeletonEntry[];
@@ -51,13 +50,6 @@ export function normalizeStoryboardRaw(
   profile: LlmProfileRow,
   softMinTotalSec: number,
 ): GenerationResult {
-  const timeline =
-    raw.timeline?.map((t) => ({
-      label: t.label,
-      text: String(t.text ?? "").trim(),
-      sources: (t.sources ?? []).map(String).filter(Boolean),
-    })) ?? [];
-
   const scenesRaw =
     raw.scenes?.map((s, i) => ({
       index: typeof s.index === "number" ? s.index : i + 1,
@@ -69,9 +61,7 @@ export function normalizeStoryboardRaw(
       ),
     })) ?? [];
 
-  const hookStr = String(raw.hook ?? "").trim();
-  const withHook = mergeHookIntoFirstSceneNarration(hookStr, scenesRaw);
-  const scenes = boostSceneDurationsIfShort(withHook, softMinTotalSec);
+  const scenes = boostSceneDurationsIfShort(scenesRaw, softMinTotalSec);
 
   let pipelinePending: StoryboardPipelinePending | undefined =
     raw.pipelinePending === "voiceover" || raw.pipelinePending === "scenes" ?
@@ -101,14 +91,9 @@ export function normalizeStoryboardRaw(
       label: profile.label,
       model: profile.model,
     },
-    hook: hookStr,
-    timeline,
+    storyArc: raw.storyArc,
     scenes,
-    factNotes: (raw.factNotes ?? []).map(String),
-    complianceNote:
-      raw.complianceNote === null || raw.complianceNote === undefined
-        ? undefined
-        : String(raw.complianceNote),
+    reviewChecklist: raw.reviewChecklist,
     voiceoverFullText:
       voiceoverFullText ||
       (voiceoverParagraphs.length ? voiceoverParagraphs.join("\n\n") : ""),

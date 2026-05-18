@@ -9,6 +9,7 @@ import {
   resolveApiKeyForMediaProfile,
   type TextToImageProfileRow,
 } from "@/lib/media-profiles";
+import { COVER_IMAGE_NEGATIVE_PROMPT } from "@/lib/prompts/image-coherence-prompts";
 import { normalizeStylePreset } from "@/lib/prompts/image-prompts";
 import type { StylePreset } from "@/lib/types";
 
@@ -67,13 +68,20 @@ async function openaiDalle3(params: {
   return url;
 }
 
+const DASHSCOPE_DEFAULT_NEGATIVE =
+  "low resolution, worst quality, malformed hands, blurry text, wrong identity, face swap";
+
 async function dashscopeQwenMultimodal(params: {
   apiKey: string;
   profile: TextToImageProfileRow;
   fullPrompt: string;
   projectSeed: string;
   sceneIndex: number;
+  /** 同镜多关键帧时区分随机种子，默认 1 */
+  keyframeIndex?: number;
   referenceImageUrl?: string | null;
+  /** 独立封面：关闭扩写并强化 negative，避免 prompt_extend 画出标题/字幕 */
+  standaloneCover?: boolean;
 }): Promise<string> {
   const url = params.profile.generationUrl!.trim();
   const model = params.profile.model!.trim();
@@ -89,15 +97,18 @@ async function dashscopeQwenMultimodal(params: {
       messages: [{ role: "user", content }],
     },
     parameters: {
-      negative_prompt:
-        params.profile.negativePrompt ??
-        "low resolution, worst quality, malformed hands, blurry text, wrong identity, face swap",
-      prompt_extend: params.profile.promptExtend !== false,
+      negative_prompt: params.standaloneCover
+        ? [params.profile.negativePrompt, COVER_IMAGE_NEGATIVE_PROMPT]
+            .filter(Boolean)
+            .join(", ")
+        : params.profile.negativePrompt ?? DASHSCOPE_DEFAULT_NEGATIVE,
+      prompt_extend:
+        params.standaloneCover ? false : params.profile.promptExtend !== false,
       watermark: params.profile.watermark === true,
       size: params.profile.size ?? "1080*1920",
       n: 1,
       seed: seedFromString(
-        `${params.projectSeed}|scene|${params.sceneIndex}`,
+        `${params.projectSeed}|scene|${params.sceneIndex}|kf${params.keyframeIndex ?? 1}`,
       ),
     },
   };
@@ -142,12 +153,16 @@ async function volcengineSeedream(params: {
   profile: TextToImageProfileRow;
   fullPrompt: string;
   referenceImageUrl?: string | null;
+  standaloneCover?: boolean;
 }): Promise<string> {
   const base = params.profile.baseUrl!.replace(/\/+$/, "");
   const endpoint = `${base}/images/generations`;
+  const promptBody = params.fullPrompt.slice(0, 2000);
   const body: Record<string, unknown> = {
     model: params.profile.model,
-    prompt: params.fullPrompt.slice(0, 2000),
+    prompt: params.standaloneCover
+      ? `${promptBody}\n\n[Must follow] Absolutely no text, letters, Chinese characters, subtitles, signs, plaques, or watermarks in the image.`
+      : promptBody,
     size: params.profile.size ?? "1440x2560",
     response_format: params.profile.responseFormat ?? "url",
     watermark: params.profile.watermark === true,
@@ -214,6 +229,8 @@ export type GenerateSceneImageParams = {
   referenceImageUrl?: string | null;
   /** 供提示词与回包说明：reference 来自上一镜还是封面兜底 */
   referenceRole?: "previous" | "cover" | null;
+  /** 同镜多关键帧：1=主静图位，2～4 为追加关键帧（影响 DashScope 随机种子） */
+  keyframeIndex?: number;
 };
 
 export type GenerateSceneImageResult = {
@@ -238,6 +255,21 @@ export type GenerateSceneImageResult = {
 export async function generateSceneImage(
   params: GenerateSceneImageParams,
 ): Promise<GenerateSceneImageResult> {
+  const keyframeIndex =
+    params.keyframeIndex === undefined || params.keyframeIndex === null ?
+      1
+    : Math.floor(Number(params.keyframeIndex));
+  const kfSafe =
+    Number.isFinite(keyframeIndex) && keyframeIndex >= 1 && keyframeIndex <= 4 ?
+      keyframeIndex
+    : 1;
+
+  let visualIn = params.visualDescription.trim();
+  if (!params.standaloneCover && kfSafe > 1) {
+    visualIn =
+      `【同镜第 ${kfSafe} 关键帧｜须与前一关键帧人物与场景连续】仅允许机位、景别、姿态或表情渐进；禁止换脸、换朝代、换场景。\n${visualIn}`;
+  }
+
   const file = loadMediaProfilesFile();
   const profile = pickImageProfile(file, params.imageProfileId);
   const apiKey = resolveApiKeyForMediaProfile(profile);
@@ -252,7 +284,7 @@ export async function generateSceneImage(
   const plan = planImageCoherencePrompt({
     sceneIndex: params.sceneIndex,
     stylePreset,
-    visualDescription: params.visualDescription,
+    visualDescription: visualIn,
     standaloneCover: params.standaloneCover,
     seriesTitle: params.seriesTitle,
     sliceTitle: params.sliceTitle,
@@ -263,6 +295,7 @@ export async function generateSceneImage(
     subjectAppearance: params.subjectAppearance,
     referenceImageUrl: params.referenceImageUrl,
     referenceRole: params.referenceRole,
+    forceIntraShotReference: kfSafe > 1,
     driver,
   });
 
@@ -296,7 +329,9 @@ export async function generateSceneImage(
         fullPrompt: plan.fullPrompt,
         projectSeed: params.projectSeed,
         sceneIndex: params.sceneIndex,
+        keyframeIndex: kfSafe,
         referenceImageUrl: refUrl,
+        standaloneCover: params.standaloneCover === true,
       });
       break;
     case "volcengine_seedream":
@@ -305,6 +340,7 @@ export async function generateSceneImage(
         profile,
         fullPrompt: plan.fullPrompt,
         referenceImageUrl: refUrl,
+        standaloneCover: params.standaloneCover === true,
       });
       break;
     default:

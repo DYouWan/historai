@@ -8,9 +8,8 @@ import {
   SLICE_EXPORT_ROOT,
 } from "@/lib/slice-export-fs";
 import {
-  buildSeedanceScenePromptsExportDocument,
   buildSliceExportBundlePayload,
-  coerceSeedanceScenePromptsFromClientBody,
+  coerceSceneKeyframeBundlesFromClientBody,
   type SliceExportManifestV1,
 } from "@/lib/slice-export-manifest";
 import type {
@@ -50,8 +49,8 @@ type ExportBody = {
   forceImageRefresh?: boolean;
   /** 整稿口播全文；优先于 result.voiceoverFullText（界面改稿） */
   voiceoverFullText?: string | null;
-  /** 各镜 Seedance 文案；非空时额外写入 seedance-scene-prompts.json */
-  seedanceScenePrompts?: unknown;
+  /** 镜号 → 多关键帧导出（额外出图 URL） */
+  sceneKeyframeBundles?: unknown;
 };
 
 const posix = (p: string) => p.split(path.sep).join("/");
@@ -99,6 +98,24 @@ async function syncSceneAudioCandidates(
   if (latest) row.audioFile = latest;
 }
 
+async function syncSceneKeyframeImageCandidates(
+  cwd: string,
+  folderName: string,
+  stem: string,
+  sceneIndex: number,
+  keyframeIndex: number,
+  manifest: SliceExportManifestV1,
+) {
+  const row = manifest.scenes.find((s) => s.index === sceneIndex);
+  if (!row?.keyframes) return;
+  const kf = row.keyframes.find((x) => x.keyframeIndex === keyframeIndex);
+  if (!kf) return;
+  const list = await listVersionedExportFiles(cwd, folderName, stem);
+  kf.imageFileCandidates = list.map((x) => x.relativePath);
+  const latest = list.length ? list[list.length - 1]!.relativePath : null;
+  if (latest) kf.imageFile = latest;
+}
+
 export async function POST(req: Request) {
   let body: ExportBody;
   try {
@@ -123,6 +140,10 @@ export async function POST(req: Request) {
   const forceImageRefresh = Boolean(body.forceImageRefresh);
   const cwd = process.cwd();
 
+  const sceneKeyframeBundles = coerceSceneKeyframeBundlesFromClientBody(
+    body.sceneKeyframeBundles,
+  );
+
   const { manifest, exportFolder, downloads } = buildSliceExportBundlePayload({
     projectSeed,
     subject,
@@ -145,6 +166,7 @@ export async function POST(req: Request) {
       typeof body.voiceoverFullText === "string" ?
         body.voiceoverFullText
       : undefined,
+    ...(sceneKeyframeBundles ? { sceneKeyframeBundles } : {}),
   });
 
   const folderName = exportFolder;
@@ -181,6 +203,20 @@ export async function POST(req: Request) {
                 manifest,
               );
             }
+            if (
+              d.kind === "sceneKeyframe" &&
+              d.sceneIndex != null &&
+              d.keyframeIndex != null
+            ) {
+              await syncSceneKeyframeImageCandidates(
+                cwd,
+                folderName,
+                d.fileStem,
+                d.sceneIndex,
+                d.keyframeIndex,
+                manifest,
+              );
+            }
             continue;
           }
         }
@@ -213,11 +249,33 @@ export async function POST(req: Request) {
             manifest,
           );
         }
+        if (
+          d.kind === "sceneKeyframe" &&
+          d.sceneIndex != null &&
+          d.keyframeIndex != null
+        ) {
+          const row = manifest.scenes.find((s) => s.index === d.sceneIndex);
+          const kf = row?.keyframes?.find(
+            (x) => x.keyframeIndex === d.keyframeIndex,
+          );
+          if (kf) kf.imageFile = rel;
+          await syncSceneKeyframeImageCandidates(
+            cwd,
+            folderName,
+            d.fileStem,
+            d.sceneIndex,
+            d.keyframeIndex,
+            manifest,
+          );
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : "未知错误";
-        errors.push(
-          d.kind === "cover" ? `封面：${msg}` : `镜 ${d.sceneIndex}：${msg}`,
-        );
+        const label =
+          d.kind === "cover" ? "封面"
+          : d.kind === "sceneKeyframe" ?
+            `镜 ${d.sceneIndex} 关键帧 ${d.keyframeIndex}`
+          : `镜 ${d.sceneIndex}`;
+        errors.push(`${label}：${msg}`);
       }
     }
 
@@ -242,34 +300,11 @@ export async function POST(req: Request) {
     const manifestRel = posix(path.relative(cwd, manifestPath));
     saved.push(manifestRel);
 
-    let seedancePromptsRel: string | null = null;
-    const seedanceScenes = coerceSeedanceScenePromptsFromClientBody(
-      body.seedanceScenePrompts,
-    );
-    if (seedanceScenes?.length) {
-      const seedanceDoc = buildSeedanceScenePromptsExportDocument({
-        generatedAt: manifest.generatedAt,
-        exportFolder: manifest.exportFolder,
-        relativeRoot: manifest.relativeRoot,
-        projectSeed: manifest.projectSeed,
-        scenes: seedanceScenes,
-      });
-      const seedancePath = path.join(dir, "seedance-scene-prompts.json");
-      await writeFile(
-        seedancePath,
-        `${JSON.stringify(seedanceDoc, null, 2)}\n`,
-        "utf-8",
-      );
-      seedancePromptsRel = posix(path.relative(cwd, seedancePath));
-      saved.push(seedancePromptsRel);
-    }
-
     return NextResponse.json({
       ok: true,
       exportFolder,
       relativeRoot: manifest.relativeRoot,
       manifestPath: manifestRel,
-      seedancePromptsPath: seedancePromptsRel,
       saved,
       incremental: true,
       errors: errors.length ? errors : undefined,

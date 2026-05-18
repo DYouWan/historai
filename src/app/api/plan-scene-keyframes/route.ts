@@ -9,10 +9,8 @@ import {
   pickProfile,
   resolveApiKeyForProfile,
 } from "@/lib/llm-profiles";
-import {
-  generateSeedancePromptsWithProfile,
-  type SeedancePromptSceneInput,
-} from "@/lib/seedance-scene-prompts";
+import { planSceneKeyframesWithProfile } from "@/lib/scene-keyframe-plan";
+import type { StoryboardScene } from "@/lib/types";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -28,8 +26,9 @@ export async function POST(req: Request) {
       seriesTitle?: string;
       sliceTitle?: string;
       sliceAngle?: string;
-      hook?: string;
-      scenes?: SeedancePromptSceneInput[];
+      opening?: string;
+      scene?: Partial<StoryboardScene>;
+      preserveFirstKeyframe?: boolean;
     };
 
     if (!body.subject?.trim()) {
@@ -38,25 +37,29 @@ export async function POST(req: Request) {
         { status: 400, headers: jsonHeaders },
       );
     }
-    const scenes = Array.isArray(body.scenes) ? body.scenes : [];
-    if (!scenes.length) {
+    const s = body.scene;
+    if (
+      !s ||
+      typeof s.index !== "number" ||
+      !Number.isFinite(s.index) ||
+      typeof s.visualDescription !== "string" ||
+      !s.visualDescription.trim()
+    ) {
       return NextResponse.json(
-        { error: "scenes 不能为空" },
+        { error: "scene 须含 index 与非空 visualDescription" },
         { status: 400, headers: jsonHeaders },
       );
     }
-    for (const s of scenes) {
-      if (
-        !Number.isFinite(s.index) ||
-        typeof s.visualDescription !== "string" ||
-        !s.visualDescription.trim()
-      ) {
-        return NextResponse.json(
-          { error: "每条 scene 须含 index 与非空 visualDescription" },
-          { status: 400, headers: jsonHeaders },
-        );
-      }
-    }
+
+    const scene: StoryboardScene = {
+      index: s.index,
+      visualDescription: s.visualDescription.trim(),
+      narration: String(s.narration ?? "").trim(),
+      durationSec:
+        Number.isFinite(s.durationSec) ?
+          Math.min(60, Math.max(2, Number(s.durationSec)))
+        : 6,
+    };
 
     const file = loadLlmProfilesFile();
     const profile = pickProfile(file, body.profileId);
@@ -67,33 +70,27 @@ export async function POST(req: Request) {
       );
     }
 
-    const prompts = await generateSeedancePromptsWithProfile({
+    const plan = await planSceneKeyframesWithProfile({
       profile,
       apiKey: key,
-      scenes: scenes.map((s) => ({
-        index: s.index,
-        visualDescription: s.visualDescription.trim(),
-        narration:
-          typeof s.narration === "string" ? s.narration.trim() : "",
-        durationSec:
-          Number.isFinite(s.durationSec) ? Number(s.durationSec) : 0,
-      })),
+      scene,
       subject: body.subject.trim(),
       dynasty: body.dynasty?.trim() || undefined,
       seriesTitle: body.seriesTitle?.trim() || undefined,
       sliceTitle: body.sliceTitle?.trim() || undefined,
       sliceAngle: body.sliceAngle?.trim() || undefined,
-      hook: body.hook?.trim() || undefined,
+      opening: body.opening?.trim() || undefined,
+      preserveFirstKeyframe: Boolean(body.preserveFirstKeyframe),
       llmRequestId: requestId,
     });
 
-    return NextResponse.json({ prompts }, { headers: jsonHeaders });
+    return NextResponse.json({ plan }, { headers: jsonHeaders });
   } catch (e) {
     const message =
-      e instanceof Error ? e.message : "Seedance 文案生成失败";
+      e instanceof Error ? e.message : "关键帧规划失败";
     await appendLlmDebugLog({
       requestId,
-      route: "POST /api/suggest-seedance-prompts",
+      route: "POST /api/plan-scene-keyframes",
       meta: { phase: "handler_error", error: message },
       promptDebug: buildImageGenerationPromptDebug({ error: message }),
     });

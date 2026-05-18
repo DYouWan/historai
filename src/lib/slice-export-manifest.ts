@@ -1,6 +1,8 @@
 import type { StoryboardChunkMode } from "@/lib/storyboard-llm-budget";
-import { buildSliceExportFolderName } from "@/lib/slice-export-fs";
-import type { SeedancePromptSceneOutput } from "@/lib/seedance-scene-prompts";
+import {
+  buildCoverImageFileStem,
+  buildSliceExportFolderName,
+} from "@/lib/slice-export-naming";
 import type {
   GenerationResult,
   StylePreset,
@@ -8,17 +10,38 @@ import type {
   VideoDurationMin,
 } from "@/lib/types";
 
-export const SLICE_EXPORT_VERSION = 1 as const;
+export const SLICE_EXPORT_VERSION = 2 as const;
+
+export type SliceExportKeyframeFileEntry = {
+  keyframeIndex: number;
+  visualPrompt?: string;
+  imageFile: string | null;
+  imageFileCandidates?: string[];
+};
+
+export type SliceExportIntraShotSegmentEntry = {
+  segmentIndex: number;
+  fromKeyframe: number;
+  toKeyframe: number;
+  targetDurationSec: number;
+  adaptationFit: string;
+  officialTemplateNotes: string;
+  suggestions: string;
+  optimizedPrompt: string;
+};
 
 export type SliceExportDownload = {
   url: string;
   fileStem: string;
-  kind: "cover" | "scene";
+  kind: "cover" | "scene" | "sceneKeyframe";
   sceneIndex?: number;
+  keyframeIndex?: number;
 };
 
 export type SliceExportManifestV1 = {
   exportVersion: typeof SLICE_EXPORT_VERSION;
+  /** 与 KEYFRAMES-SEEDANCE-SPEC 对齐；exportVersion 同步递增 */
+  manifestVersion: typeof SLICE_EXPORT_VERSION;
   generatedAt: string;
   exportFolder: string;
   /** 项目根下目录，POSIX 斜杠 */
@@ -35,10 +58,8 @@ export type SliceExportManifestV1 = {
   tone: Tone;
   imageProfileId: string;
   llmProfile?: GenerationResult["llmProfile"];
-  hook?: string;
-  timeline?: GenerationResult["timeline"];
-  factNotes?: string[];
-  complianceNote?: string;
+  storyArc?: GenerationResult["storyArc"];
+  reviewChecklist?: GenerationResult["reviewChecklist"];
   /** 整稿口播全文（与 scenes[].narration 分段对应前的总稿；导出时含界面改稿） */
   voiceoverFullText?: string;
   cover?: {
@@ -57,6 +78,10 @@ export type SliceExportManifestV1 = {
     narration: string;
     visualDescription: string;
     durationSec: number;
+    /** 关键帧 ≥2 的额外静帧；关键帧 1 与 imageFile 主 stem 一致 */
+    keyframes?: SliceExportKeyframeFileEntry[];
+    /** @deprecated 历史导出可能含镜内段；当前版本不再写入 */
+    intraShotSegments?: SliceExportIntraShotSegmentEntry[];
   }>;
   notes: string;
 };
@@ -67,7 +92,16 @@ type AssetLike = {
 };
 
 const DEFAULT_NOTES =
-  "本包用于外部剪辑：按 scenes 顺序结合 narration / visualDescription；manifest.voiceoverFullText 为整稿口播全文（若有）。封面为独立竖屏外宣图，可与镜 1 不同。静帧落盘 stem 形如 {projectSeed}-scene-img-镜号，逐镜口播 TTS 为 {projectSeed}-scene-audio-镜号；重复保存为 stem-2、stem-3… 不覆盖；导出资源时静帧默认拉取远程 URL，音频仅扫描本地已落盘文件写入 manifest。";
+  "本包用于外部剪辑：按 scenes 顺序结合 narration / visualDescription；manifest.voiceoverFullText 为整稿口播全文（若有）。封面为独立竖屏外宣图，可与镜 1 不同；封面 stem 为 系列名-主角-画风-cover（不含叙事时长）。主静帧 stem 形如 {projectSeed}-scene-img-镜号；同镜追加关键帧为 …-scene-img-镜号-kf02 等；逐镜口播 TTS 为 {projectSeed}-scene-audio-镜号；重复保存为 stem-2、stem-3… 不覆盖；导出资源时静帧默认拉取远程 URL，音频仅扫描本地已落盘文件写入 manifest。manifestVersion 2 起 scenes 可含 keyframes。";
+
+export type SliceExportSceneKeyframeBundleInput = {
+  keyframeCount: number;
+  extraKeyframes: Array<{
+    keyframeIndex: number;
+    url?: string;
+    visualPrompt?: string;
+  }>;
+};
 
 export function buildSliceExportBundlePayload(params: {
   projectSeed: string;
@@ -86,6 +120,8 @@ export function buildSliceExportBundlePayload(params: {
   assets: Record<number, AssetLike>;
   /** 整稿口播全文；优先于 result（如导出前在 UI 中改过稿） */
   voiceoverFullText?: string | null;
+  /** 镜号 → 多关键帧（仅含 keyframeIndex≥2 的额外出图 URL） */
+  sceneKeyframeBundles?: Record<number, SliceExportSceneKeyframeBundleInput>;
 }): {
   manifest: SliceExportManifestV1;
   exportFolder: string;
@@ -108,7 +144,12 @@ export function buildSliceExportBundlePayload(params: {
   if (params.coverStillUrl) {
     downloads.push({
       url: params.coverStillUrl,
-      fileStem: seed,
+      fileStem: buildCoverImageFileStem({
+        seriesTitle: params.seriesTitle,
+        sliceTitle: params.sliceTitle,
+        subject: params.subject,
+        stylePreset: params.stylePreset,
+      }),
       kind: "cover",
     });
   }
@@ -126,6 +167,31 @@ export function buildSliceExportBundlePayload(params: {
           sceneIndex: s.index,
         });
       }
+      const bundle = params.sceneKeyframeBundles?.[s.index];
+      const keyframes: SliceExportKeyframeFileEntry[] | undefined =
+        bundle?.extraKeyframes?.length ?
+          bundle.extraKeyframes
+            .filter((x) => x.keyframeIndex > 1)
+            .map((x) => {
+              const u = x.url?.trim();
+              if (u) {
+                downloads.push({
+                  url: u,
+                  fileStem: `${seed}-scene-img-${String(s.index).padStart(2, "0")}-kf${String(x.keyframeIndex).padStart(2, "0")}`,
+                  kind: "sceneKeyframe",
+                  sceneIndex: s.index,
+                  keyframeIndex: x.keyframeIndex,
+                });
+              }
+              return {
+                keyframeIndex: x.keyframeIndex,
+                ...(x.visualPrompt?.trim() ?
+                  { visualPrompt: x.visualPrompt.trim() }
+                : {}),
+                imageFile: null,
+              };
+            })
+        : undefined;
       return {
         index: s.index,
         imageFile: null,
@@ -133,6 +199,7 @@ export function buildSliceExportBundlePayload(params: {
         narration: s.narration,
         visualDescription: s.visualDescription,
         durationSec: s.durationSec,
+        ...(keyframes?.length ? { keyframes } : {}),
       };
     }) ?? [];
 
@@ -143,6 +210,7 @@ export function buildSliceExportBundlePayload(params: {
 
   const manifest: SliceExportManifestV1 = {
     exportVersion: SLICE_EXPORT_VERSION,
+    manifestVersion: SLICE_EXPORT_VERSION,
     generatedAt,
     exportFolder,
     relativeRoot,
@@ -158,10 +226,8 @@ export function buildSliceExportBundlePayload(params: {
     tone: params.tone,
     imageProfileId: params.imageProfileId.trim(),
     llmProfile: params.result?.llmProfile,
-    hook: params.result?.hook,
-    timeline: params.result?.timeline,
-    factNotes: params.result?.factNotes,
-    complianceNote: params.result?.complianceNote,
+    storyArc: params.result?.storyArc,
+    reviewChecklist: params.result?.reviewChecklist,
     ...(voiceoverMerged ? { voiceoverFullText: voiceoverMerged } : {}),
     cover:
       params.coverStillUrl ?
@@ -174,59 +240,45 @@ export function buildSliceExportBundlePayload(params: {
   return { manifest, exportFolder, downloads };
 }
 
-export const SEEDANCE_SCENE_EXPORT_VERSION = 1 as const;
-
-export type SliceExportSeedanceScenePromptsV1 = {
-  exportVersion: typeof SEEDANCE_SCENE_EXPORT_VERSION;
-  generatedAt: string;
-  exportFolder: string;
-  relativeRoot: string;
-  projectSeed: string;
-  notes: string;
-  scenes: SeedancePromptSceneOutput[];
-};
-
-const SEEDANCE_SCENE_EXPORT_NOTES =
-  "HistorAI 导出的各镜 Seedance 图生视频分析与优化提示词；index 为分镜镜号，与 manifest.json 中 scenes 及静帧 stem 对应。";
-
-/** 校验并规范化客户端 POST 的 Seedance 条目；无效或空数组返回 null。 */
-export function coerceSeedanceScenePromptsFromClientBody(
+export function coerceSceneKeyframeBundlesFromClientBody(
   raw: unknown,
-): SeedancePromptSceneOutput[] | null {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-  const out: SeedancePromptSceneOutput[] = [];
-  for (const row of raw) {
-    if (!row || typeof row !== "object") continue;
-    const r = row as Record<string, unknown>;
-    const index = Number(r.index);
-    if (!Number.isFinite(index)) continue;
-    out.push({
-      index,
-      adaptationFit: String(r.adaptationFit ?? "").trim(),
-      officialTemplateNotes: String(r.officialTemplateNotes ?? "").trim(),
-      suggestions: String(r.suggestions ?? "").trim(),
-      optimizedPrompt: String(r.optimizedPrompt ?? "").trim(),
-    });
-  }
-  if (!out.length) return null;
-  out.sort((a, b) => a.index - b.index);
-  return out;
-}
+): Record<number, SliceExportSceneKeyframeBundleInput> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const root = raw as Record<string, unknown>;
+  const out: Record<number, SliceExportSceneKeyframeBundleInput> = {};
+  for (const [k, v] of Object.entries(root)) {
+    const sceneIdx = Number(k);
+    if (!Number.isFinite(sceneIdx) || sceneIdx < 1) continue;
+    if (!v || typeof v !== "object") continue;
+    const r = v as Record<string, unknown>;
+    const kc = Math.min(
+      4,
+      Math.max(1, Math.floor(Number(r.keyframeCount)) || 1),
+    );
+    const extraRaw = Array.isArray(r.extraKeyframes) ? r.extraKeyframes : [];
+    const extraKeyframes = extraRaw
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const e = item as Record<string, unknown>;
+        const keyframeIndex = Math.floor(Number(e.keyframeIndex));
+        if (!Number.isFinite(keyframeIndex) || keyframeIndex < 2) return null;
+        const url = typeof e.url === "string" ? e.url.trim() : "";
+        const visualPrompt =
+          typeof e.visualPrompt === "string" ? e.visualPrompt.trim() : "";
+        return {
+          keyframeIndex,
+          ...(url ? { url } : {}),
+          ...(visualPrompt ? { visualPrompt } : {}),
+        };
+      })
+      .filter(Boolean) as SliceExportSceneKeyframeBundleInput["extraKeyframes"];
 
-export function buildSeedanceScenePromptsExportDocument(params: {
-  generatedAt: string;
-  exportFolder: string;
-  relativeRoot: string;
-  projectSeed: string;
-  scenes: SeedancePromptSceneOutput[];
-}): SliceExportSeedanceScenePromptsV1 {
-  return {
-    exportVersion: SEEDANCE_SCENE_EXPORT_VERSION,
-    generatedAt: params.generatedAt,
-    exportFolder: params.exportFolder,
-    relativeRoot: params.relativeRoot,
-    projectSeed: params.projectSeed.trim(),
-    notes: SEEDANCE_SCENE_EXPORT_NOTES,
-    scenes: [...params.scenes].sort((a, b) => a.index - b.index),
-  };
+    if (extraKeyframes.length || kc > 1) {
+      out[sceneIdx] = {
+        keyframeCount: kc,
+        extraKeyframes,
+      };
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
 }

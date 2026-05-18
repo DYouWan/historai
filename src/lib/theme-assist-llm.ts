@@ -1,16 +1,25 @@
+import { parseChatCompletionResponse } from "@/lib/chat-openai-compatible";
+import { validateAppearanceBatch } from "@/lib/character-suggest-validate";
 import {
   loadLlmProfilesFile,
   pickProfile,
   resolveApiKeyForProfile,
   type LlmProfileRow,
 } from "@/lib/llm-profiles";
-import { CHAR_SYSTEM, SLICE_SYSTEM } from "@/lib/prompts/system-prompts";
 import {
-  buildCharacterRecommendUserPrompt,
+  CHAR_APPEARANCE_SYSTEM,
+  CHAR_ROSTER_SYSTEM,
+  SLICE_SYSTEM,
+} from "@/lib/prompts/system-prompts";
+import {
+  buildCharacterAppearanceUserPrompt,
+  buildCharacterRosterUserPrompt,
   buildSliceRecommendUserPrompt,
+  type CharacterRosterRow,
 } from "@/lib/prompts/user-templates";
 import type {
   CharacterSuggestion,
+  LlmDebugPhase,
   LlmMessagesDebug,
   SliceSuggestion,
   VideoDurationMin,
@@ -23,65 +32,287 @@ export class LlmNotConfiguredError extends Error {
   }
 }
 
+/** LLM 调用失败时携带已完成的 promptDebug，供 API 写入日志 */
+export class LlmAssistError extends Error {
+  readonly promptDebug?: LlmMessagesDebug;
+
+  constructor(message: string, promptDebug?: LlmMessagesDebug) {
+    super(message);
+    this.name = "LlmAssistError";
+    this.promptDebug = promptDebug;
+  }
+}
+
+function promptDebugFromPhases(phases: LlmDebugPhase[]): LlmMessagesDebug | undefined {
+  if (!phases.length) return undefined;
+  const first = phases[0]!;
+  const assistantJoined = phases
+    .filter((p) => p.assistantRaw)
+    .map((p) => `=== ${p.phase} ===\n${p.assistantRaw}`)
+    .join("\n\n");
+  return {
+    system: first.system,
+    user: first.user,
+    model: first.model,
+    chatCompletionsUrl: first.chatCompletionsUrl,
+    temperature: first.temperature,
+    usesJsonResponseFormat: first.usesJsonResponseFormat,
+    assistantRaw: assistantJoined || undefined,
+    phases: phases.length > 1 ? phases : undefined,
+  };
+}
+
 async function chatCompletionText(params: {
   profile: LlmProfileRow;
   key: string;
   system: string;
   user: string;
   temperature: number;
-  /** 不传则由上游默认；短 JSON 任务宜收紧以防啰嗦 */
   maxTokens?: number;
 }): Promise<{ text: string; promptDebug: LlmMessagesDebug }> {
-  const usesJson = params.profile.supportsJsonObject !== false;
-  const body: Record<string, unknown> = {
-    model: params.profile.model,
-    messages: [
-      { role: "system", content: params.system },
-      { role: "user", content: params.user },
-    ],
-    temperature: params.temperature,
-    ...(params.maxTokens != null ? { max_tokens: params.maxTokens } : {}),
+  const preferJson = params.profile.supportsJsonObject !== false;
+
+  const callOnce = async (useJson: boolean): Promise<{
+    text: string;
+    promptDebug: LlmMessagesDebug;
+    finishReason?: string;
+  }> => {
+    const body: Record<string, unknown> = {
+      model: params.profile.model,
+      messages: [
+        { role: "system", content: params.system },
+        { role: "user", content: params.user },
+      ],
+      temperature: params.temperature,
+      ...(params.maxTokens != null ? { max_tokens: params.maxTokens } : {}),
+    };
+    if (useJson) {
+      body.response_format = { type: "json_object" };
+    }
+
+    const promptDebug: LlmMessagesDebug = {
+      system: params.system,
+      user: params.user,
+      model: params.profile.model,
+      chatCompletionsUrl: params.profile.chatCompletionsUrl.trim(),
+      temperature: params.temperature,
+      usesJsonResponseFormat: useJson,
+    };
+
+    const res = await fetch(params.profile.chatCompletionsUrl.trim(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${params.key}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const t = await res.text();
+      throw new LlmAssistError(
+        `模型请求失败（${res.status}）：${t.slice(0, 300)}`,
+        promptDebug,
+      );
+    }
+
+    const data = await res.json();
+    const parsed = parseChatCompletionResponse(data);
+    const trimmed = parsed.text.trim();
+    return {
+      text: trimmed,
+      finishReason: parsed.finishReason,
+      promptDebug: {
+        ...promptDebug,
+        assistantRaw:
+          trimmed ||
+          (parsed.usedReasoningFallback ?
+            "_(empty content; used reasoning_content fallback)_"
+          : "_(empty)_"),
+      },
+    };
   };
-  if (usesJson) {
-    body.response_format = { type: "json_object" };
+
+  let attempt = await callOnce(preferJson);
+  if (!attempt.text && preferJson) {
+    attempt = await callOnce(false);
   }
 
-  const promptDebug: LlmMessagesDebug = {
-    system: params.system,
-    user: params.user,
-    model: params.profile.model,
-    chatCompletionsUrl: params.profile.chatCompletionsUrl.trim(),
-    temperature: params.temperature,
-    usesJsonResponseFormat: usesJson,
-  };
-
-  const res = await fetch(params.profile.chatCompletionsUrl.trim(), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${params.key}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`模型请求失败（${res.status}）：${t.slice(0, 300)}`);
+  if (!attempt.text) {
+    const fr = attempt.finishReason ? `（finish_reason=${attempt.finishReason}）` : "";
+    throw new LlmAssistError(
+      `模型返回内容为空${fr}；可换模型档案或稍后重试`,
+      attempt.promptDebug,
+    );
   }
 
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const text = data.choices?.[0]?.message?.content;
-  if (!text?.trim()) throw new Error("模型返回内容为空");
-
-  const trimmed = text.trim();
   return {
-    text: trimmed,
-    promptDebug: { ...promptDebug, assistantRaw: trimmed },
+    text: attempt.text,
+    promptDebug: { ...attempt.promptDebug, assistantRaw: attempt.text },
   };
 }
 
+function parseRosterJson(
+  text: string,
+  excludeSet: Set<string>,
+): CharacterRosterRow[] {
+  let parsed: { characters?: unknown };
+  try {
+    parsed = JSON.parse(text) as { characters?: unknown };
+  } catch {
+    throw new Error("人选阶段：模型输出不是合法 JSON");
+  }
+  const raw = parsed.characters;
+  const list = Array.isArray(raw) ? raw : [];
+  const roster: CharacterRosterRow[] = [];
+  const seen = new Set<string>();
+  for (const row of list) {
+    let name = "";
+    let dynasty = "";
+    if (typeof row === "string") {
+      name = row.trim();
+    } else if (row && typeof row === "object") {
+      const o = row as { name?: unknown; dynasty?: unknown };
+      name = String(o.name ?? "").trim();
+      dynasty = String(o.dynasty ?? "").trim();
+    }
+    if (!name) continue;
+    if (excludeSet.has(name)) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    roster.push({ name, dynasty });
+    if (roster.length >= 12) break;
+  }
+  if (roster.length < 8) {
+    throw new Error(
+      `人选阶段：有效人物 ${roster.length} 条，须 8～12 条，请重试。`,
+    );
+  }
+  return roster;
+}
+
+function parseAppearancesJson(
+  text: string,
+  roster: CharacterRosterRow[],
+): Map<string, string> {
+  let parsed: { appearances?: unknown };
+  try {
+    parsed = JSON.parse(text) as { appearances?: unknown };
+  } catch {
+    throw new Error("形象阶段：模型输出不是合法 JSON");
+  }
+  const raw = parsed.appearances;
+  const list = Array.isArray(raw) ? raw : [];
+  const byName = new Map<string, string>();
+  for (const row of list) {
+    if (!row || typeof row !== "object") continue;
+    const o = row as { name?: unknown; appearance?: unknown };
+    const name = String(o.name ?? "").trim();
+    const appearance = String(o.appearance ?? "").trim();
+    if (!name || !appearance) continue;
+    byName.set(name, appearance);
+  }
+  const expected = new Set(roster.map((r) => r.name));
+  const missing: string[] = [];
+  for (let i = 0; i < roster.length; i++) {
+    const n = roster[i]!.name;
+    if (!byName.has(n)) missing.push(n);
+  }
+  if (missing.length) {
+    throw new Error(
+      `形象阶段：缺少 ${missing.slice(0, 4).join("、")}${missing.length > 4 ? " 等" : ""} 的 appearance，请重试。`,
+    );
+  }
+  byName.forEach((_appearance, key) => {
+    if (!expected.has(key)) {
+      throw new Error(`形象阶段：出现未在名单中的 name「${key}」`);
+    }
+  });
+  return byName;
+}
+
+async function fetchThemeCharacterRoster(args: {
+  profile: LlmProfileRow;
+  key: string;
+  seriesTitle: string;
+  excludeSet: Set<string>;
+}): Promise<{ roster: CharacterRosterRow[]; phase: LlmDebugPhase }> {
+  const user = buildCharacterRosterUserPrompt(
+    args.seriesTitle,
+    args.excludeSet.size ? Array.from(args.excludeSet) : undefined,
+  );
+  const { text, promptDebug } = await chatCompletionText({
+    profile: args.profile,
+    key: args.key,
+    system: CHAR_ROSTER_SYSTEM,
+    user,
+    temperature: 0.75,
+    maxTokens: 1200,
+  });
+  const roster = parseRosterJson(text, args.excludeSet);
+  return {
+    roster,
+    phase: {
+      phase: "character_roster",
+      system: CHAR_ROSTER_SYSTEM,
+      user,
+      model: promptDebug.model,
+      chatCompletionsUrl: promptDebug.chatCompletionsUrl,
+      temperature: promptDebug.temperature,
+      usesJsonResponseFormat: promptDebug.usesJsonResponseFormat,
+      maxTokens: 1200,
+      assistantRaw: text,
+    },
+  };
+}
+
+async function fetchThemeCharacterAppearances(args: {
+  profile: LlmProfileRow;
+  key: string;
+  seriesTitle: string;
+  roster: CharacterRosterRow[];
+  retryHint?: string;
+}): Promise<{ byName: Map<string, string>; phase: LlmDebugPhase }> {
+  let user = buildCharacterAppearanceUserPrompt(args.seriesTitle, args.roster);
+  if (args.retryHint?.trim()) {
+    user += `\n\n【自动重试】${args.retryHint.trim()}\n请严格按锁定名单逐条输出 appearances。`;
+  }
+  const { text, promptDebug } = await chatCompletionText({
+    profile: args.profile,
+    key: args.key,
+    system: CHAR_APPEARANCE_SYSTEM,
+    user,
+    temperature: 0.55,
+    maxTokens: 2800,
+  });
+  const byName = parseAppearancesJson(text, args.roster);
+  const batch = args.roster.map((r) => ({
+    name: r.name,
+    appearance: byName.get(r.name) ?? "",
+  }));
+  const validationError = validateAppearanceBatch(batch);
+  if (validationError) {
+    throw new Error(`形象阶段校验：${validationError}`);
+  }
+  return {
+    byName,
+    phase: {
+      phase: "character_appearance",
+      system: CHAR_APPEARANCE_SYSTEM,
+      user,
+      model: promptDebug.model,
+      chatCompletionsUrl: promptDebug.chatCompletionsUrl,
+      temperature: promptDebug.temperature,
+      usesJsonResponseFormat: promptDebug.usesJsonResponseFormat,
+      maxTokens: 2800,
+      assistantRaw: text,
+    },
+  };
+}
+
+/**
+ * ① 人选 → ② 批量形象（「换一批」时 excludeNames 仅作用于①，随后自动②）
+ */
 export async function fetchThemeCharacters(params: {
   profileId?: string | null;
   seriesTitle: string;
@@ -102,60 +333,71 @@ export async function fetchThemeCharacters(params: {
       .filter(Boolean),
   );
 
-  const user = buildCharacterRecommendUserPrompt(
-    params.seriesTitle,
-    excludeSet.size ? Array.from(excludeSet) : undefined,
-  );
+  const phases: LlmDebugPhase[] = [];
 
-  const { text, promptDebug } = await chatCompletionText({
-    profile,
-    key,
-    system: CHAR_SYSTEM,
-    user,
-    temperature: 0.75,
-  });
-
-  let parsed: { characters?: unknown };
   try {
-    parsed = JSON.parse(text) as { characters?: unknown };
-  } catch {
-    throw new Error("模型输出不是合法 JSON");
-  }
+    const { roster, phase: rosterPhase } = await fetchThemeCharacterRoster({
+      profile,
+      key,
+      seriesTitle: params.seriesTitle,
+      excludeSet,
+    });
+    phases.push(rosterPhase);
 
-  const raw = parsed.characters;
-  const list = Array.isArray(raw) ? raw : [];
-
-  const characters: CharacterSuggestion[] = [];
-  const seen = new Set<string>();
-  for (const row of list) {
-    let name = "";
-    let appearance = "";
-    let dynasty = "";
-    if (typeof row === "string") {
-      name = row.trim();
-    } else if (row && typeof row === "object") {
-      const o = row as { name?: unknown; appearance?: unknown; dynasty?: unknown };
-      name = String(o.name ?? "").trim();
-      appearance = String(o.appearance ?? "").trim();
-      dynasty = String(o.dynasty ?? "").trim();
+    let appearanceByName: Map<string, string>;
+    try {
+      const first = await fetchThemeCharacterAppearances({
+        profile,
+        key,
+        seriesTitle: params.seriesTitle,
+        roster,
+      });
+      appearanceByName = first.byName;
+      phases.push(first.phase);
+    } catch (e1) {
+      const msg = e1 instanceof Error ? e1.message : String(e1);
+      const second = await fetchThemeCharacterAppearances({
+        profile,
+        key,
+        seriesTitle: params.seriesTitle,
+        roster,
+        retryHint: msg,
+      });
+      appearanceByName = second.byName;
+      phases.push(second.phase);
     }
-    if (!name) continue;
-    if (excludeSet.has(name)) continue;
-    if (seen.has(name)) continue;
-    seen.add(name);
-    characters.push({ name, appearance, dynasty });
-    if (characters.length >= 12) break;
-  }
 
-  if (!characters.length) {
-    throw new Error(
-      excludeSet.size > 0 ?
-        "模型返回的人选与排除名单冲突或为空，请重试。"
-      : "模型未返回有效人物列表，请重试。",
-    );
-  }
+    const characters: CharacterSuggestion[] = roster.map((r) => ({
+      name: r.name,
+      dynasty: r.dynasty,
+      appearance: appearanceByName.get(r.name) ?? "",
+    }));
 
-  return { characters, promptDebug };
+    const merged = promptDebugFromPhases(phases);
+    if (!merged) {
+      throw new Error("推荐人物：内部调试信息缺失");
+    }
+    return {
+      characters,
+      promptDebug: {
+        ...merged,
+        storyboardStrategy:
+          "character_recommend · ① roster → ② appearance (batch)",
+      },
+    };
+  } catch (e) {
+    const partial = promptDebugFromPhases(phases);
+    if (e instanceof LlmAssistError) {
+      throw new LlmAssistError(e.message, e.promptDebug ?? partial);
+    }
+    if (partial) {
+      throw new LlmAssistError(
+        e instanceof Error ? e.message : "推荐人物失败",
+        partial,
+      );
+    }
+    throw e;
+  }
 }
 
 type RawSlice = { suggestions?: Array<{ title?: string; angle?: string }> };
@@ -165,7 +407,6 @@ export async function fetchCharacterSlices(params: {
   seriesTitle: string;
   characterName: string;
   excludeTitles?: string[];
-  /** 成片目标时长档位，写入推荐 user 提示以约束切口体量 */
   videoDurationMin?: VideoDurationMin;
 }): Promise<{ suggestions: SliceSuggestion[]; promptDebug: LlmMessagesDebug }> {
   const file = loadLlmProfilesFile();
@@ -195,7 +436,7 @@ export async function fetchCharacterSlices(params: {
     key,
     system: SLICE_SYSTEM,
     user,
-    temperature: 0.85,
+    temperature: 0.9,
   });
 
   let parsed: RawSlice;

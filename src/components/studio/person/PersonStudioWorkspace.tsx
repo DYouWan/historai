@@ -4,21 +4,31 @@ import type {
   CharacterSuggestion,
   GenerationResult,
   SliceSuggestion,
-  StoryboardSpineSnapshot,
   StylePreset,
   Tone,
   VideoDurationMin,
 } from "@/lib/types";
+import { buildSpineSnapshotFromResult } from "@/lib/storyboard-spine";
 import type { StoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { VIDEO_DURATION_UI_OPTIONS } from "@/lib/video-duration";
 import { THEME_TITLE_PRESETS } from "@/lib/prompts/series-prompts";
+import { buildCoverImageFileStem } from "@/lib/slice-export-naming";
 import { ACTIVE_STUDIO_VERTICAL } from "@/lib/studio-verticals";
-import type { SeedancePromptSceneOutput } from "@/lib/seedance-scene-prompts";
+import { StoryboardSceneAccordionList } from "@/components/studio/person/StoryboardSceneAccordionList";
+import type { SceneKeyframePlanResult } from "@/lib/scene-keyframe-plan";
+import type { SliceExportSceneKeyframeBundleInput } from "@/lib/slice-export-manifest";
 import {
   VOLCENGINE_TTS_VOICE_CUSTOM,
   VOLCENGINE_TTS_VOICE_PRESETS,
 } from "@/lib/volcengine-tts-voice-presets";
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 
 const LAST_LLM_PROFILE_KEY = "historai:llmProfileId";
 const LAST_VOLC_TTS_VOICE_KEY = "historai:volcTtsVoice";
@@ -63,6 +73,7 @@ const STORYBOARD_CHUNK_OPTIONS: {
 
 const STYLE_OPTIONS: { id: StylePreset; label: string }[] = [
   { id: "anime", label: "动漫插画" },
+  { id: "anime_modern", label: "古风插画" },
   { id: "cinematic", label: "电影质感" },
 ];
 
@@ -196,6 +207,47 @@ type AssetRow = {
   provider?: string;
 };
 
+type KeyframeRowState = {
+  keyframeIndex: number;
+  visualPrompt: string;
+  status: "idle" | "running" | "success" | "failed";
+  url?: string;
+  error?: string;
+  provider?: string;
+};
+
+type SceneKeyframePlanUi = {
+  keyframeCount: number;
+  keyframes: KeyframeRowState[];
+  planningBusy: boolean;
+  planningError: string | null;
+  generatingKeyframeIndex: number | null;
+};
+
+function buildSceneKeyframePlanUi(
+  plan: SceneKeyframePlanResult,
+  preserveKf1Url: string | undefined,
+): SceneKeyframePlanUi {
+  const keyframes: KeyframeRowState[] = plan.keyframes.map((kf) => {
+    const isFirst = kf.keyframeIndex === 1;
+    const u = preserveKf1Url?.trim();
+    const ok = Boolean(isFirst && u);
+    return {
+      keyframeIndex: kf.keyframeIndex,
+      visualPrompt: kf.visualPrompt,
+      status: ok ? "success" : "idle",
+      url: ok ? u : undefined,
+    };
+  });
+  return {
+    keyframeCount: plan.keyframeCount,
+    keyframes,
+    planningBusy: false,
+    planningError: null,
+    generatingKeyframeIndex: null,
+  };
+}
+
 /** 单次封面请求状态（成功结果进入 coverGallery，便于多次生成叠放展示） */
 type CoverRequestState = {
   status: "idle" | "running" | "failed";
@@ -237,8 +289,8 @@ export function PersonStudioWorkspace() {
   const [voiceoverDraft, setVoiceoverDraft] = useState("");
   /** L1 叙事骨架区块整块可收起，减轻长页滚动 */
   const [narrativeSkeletonPanelExpanded, setNarrativeSkeletonPanelExpanded] = useState(true);
-  /** L1 内：时间线子块可折叠（叙事骨架生成后默认收起） */
-  const [narrativeTimelineExpanded, setNarrativeTimelineExpanded] = useState(false);
+  /** L1 内：故事弧子块可折叠（叙事方案生成后默认收起） */
+  const [narrativeStoryArcExpanded, setNarrativeStoryArcExpanded] = useState(false);
   /** L1 内：分镜骨架子块可折叠（叙事骨架生成后默认收起） */
   const [narrativeSceneSkeletonExpanded, setNarrativeSceneSkeletonExpanded] =
     useState(false);
@@ -285,13 +337,8 @@ export function PersonStudioWorkspace() {
     }
     return coverGallery[0]?.url ?? null;
   }, [coverGallery, selectedCoverId]);
-  const [batchBusy, setBatchBusy] = useState(false);
-  /** 批量生成时设为 true 可中断循环 */
-  const stopBatchRef = useRef(false);
-  /** 当前批量出图中这一镜的 fetch，用于「停止生成」时 abort */
-  const batchAssetAbortRef = useRef<AbortController | null>(null);
-  /** 用于在新一条 L1 hook 出现时收起时间线 / 分镜骨架子块 */
-  const lastNarrativeSpineHookRef = useRef<string | undefined>(undefined);
+  /** 在新一条 L1 方案出现时收起故事弧子块 / 镜序表 */
+  const lastNarrativeSpineOpeningRef = useRef<string | undefined>(undefined);
   const [llmProfiles, setLlmProfiles] = useState<LlmProfileOption[]>([]);
   const [profileId, setProfileId] = useState("");
   const [profilesError, setProfilesError] = useState<string | null>(null);
@@ -319,17 +366,17 @@ export function PersonStudioWorkspace() {
   const [slicesHint, setSlicesHint] = useState<string | null>(null);
 
   useEffect(() => {
-    const hook = result?.hook?.trim();
-    if (!hook) {
-      lastNarrativeSpineHookRef.current = undefined;
+    const opening = result?.storyArc?.opening?.trim();
+    if (!opening) {
+      lastNarrativeSpineOpeningRef.current = undefined;
       return;
     }
-    if (lastNarrativeSpineHookRef.current === hook) return;
-    lastNarrativeSpineHookRef.current = hook;
-    setNarrativeTimelineExpanded(false);
+    if (lastNarrativeSpineOpeningRef.current === opening) return;
+    lastNarrativeSpineOpeningRef.current = opening;
+    setNarrativeStoryArcExpanded(false);
     setNarrativeSceneSkeletonExpanded(false);
     setVoiceoverDraftPanelExpanded(false);
-  }, [result?.hook]);
+  }, [result?.storyArc?.opening]);
 
   useEffect(() => {
     let cancelled = false;
@@ -414,6 +461,8 @@ export function PersonStudioWorkspace() {
 
   useEffect(() => {
     setCoverRequest({ status: "idle" });
+    setSceneKeyframeUiByScene({});
+    setSceneExpandedByScene({});
   }, [result]);
 
   useEffect(() => {
@@ -500,17 +549,13 @@ export function PersonStudioWorkspace() {
   const [sceneTtsBatchBusy, setSceneTtsBatchBusy] = useState(false);
   const stopSceneTtsBatchRef = useRef(false);
 
-  const [seedancePromptByIndex, setSeedancePromptByIndex] = useState<
-    Record<number, SeedancePromptSceneOutput>
+
+  const [sceneKeyframeUiByScene, setSceneKeyframeUiByScene] = useState<
+    Record<number, SceneKeyframePlanUi>
   >({});
-  const [seedancePromptBusy, setSeedancePromptBusy] = useState(false);
-  const [seedancePromptError, setSeedancePromptError] = useState<string | null>(
-    null,
-  );
-  /** 非 null 时表示正在为某一镜单独生成 Seedance 文案 */
-  const [seedanceSingleBusyIndex, setSeedanceSingleBusyIndex] = useState<
-    number | null
-  >(null);
+  const [sceneExpandedByScene, setSceneExpandedByScene] = useState<
+    Record<number, boolean>
+  >({});
 
   /** 出图成功后写入 slice-exports；不占用手动 busy，失败仅更新 sliceSaveHint */
   const persistSceneImageQuietly = useCallback(
@@ -540,6 +585,44 @@ export function PersonStudioWorkspace() {
           e instanceof Error ?
             `镜 ${sceneIndex} 自动保存失败：${e.message}`
           : `镜 ${sceneIndex} 自动保存失败`,
+        );
+      }
+    },
+    [subject, sliceFolderTitle],
+  );
+
+  const persistSceneKeyframeImageQuietly = useCallback(
+    async (
+      imageUrl: string,
+      sceneIndex: number,
+      keyframeIndex: number,
+      fileStem: string,
+    ) => {
+      if (!subject.trim()) return;
+      try {
+        const res = await fetch("/api/save-slice-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageUrl,
+            subject: subject.trim(),
+            title: sliceFolderTitle,
+            role: "scene",
+            sceneIndex,
+            fileStem,
+          }),
+        });
+        const json = (await res.json()) as { error?: string; relativePath?: string };
+        if (!res.ok) {
+          setSliceSaveHint(
+            `镜 ${sceneIndex} 关键帧 ${keyframeIndex} 自动保存失败：${json.error ?? String(res.status)}`,
+          );
+        }
+      } catch (e) {
+        setSliceSaveHint(
+          e instanceof Error ?
+            `镜 ${sceneIndex} 关键帧 ${keyframeIndex} 自动保存失败：${e.message}`
+          : `镜 ${sceneIndex} 关键帧 ${keyframeIndex} 自动保存失败`,
         );
       }
     },
@@ -671,6 +754,18 @@ export function PersonStudioWorkspace() {
       .slice(0, 48);
   }, [subject, stylePreset, seriesTitle, videoDurationMin]);
 
+  /** 封面落盘文件名 stem（系列-主角-画风-cover），与 projectSeed 分离，不含 1m */
+  const coverFileStem = useMemo(
+    () =>
+      buildCoverImageFileStem({
+        seriesTitle,
+        sliceTitle,
+        subject,
+        stylePreset,
+      }),
+    [seriesTitle, sliceTitle, subject, stylePreset],
+  );
+
   /** 仅需主角即可导出（可仅写入 manifest，无静帧/音频也会落盘） */
   const canExportSliceBundle = Boolean(subject.trim());
 
@@ -684,76 +779,27 @@ export function PersonStudioWorkspace() {
     [result?.scenes.length, volcTtsEffectiveVoiceType, subject],
   );
 
-  const runBatchSeedancePrompts = useCallback(async () => {
-    if (!result?.scenes.length || !subject.trim()) return;
-    setSeedanceSingleBusyIndex(null);
-    setSeedancePromptBusy(true);
-    setSeedancePromptError(null);
-    try {
-      const res = await fetch("/api/suggest-seedance-prompts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profileId: profileId || undefined,
-          subject: subject.trim(),
-          dynasty: dynasty.trim() || undefined,
-          seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
-          hook: result.hook,
-          scenes: result.scenes.map((s) => ({
-            index: s.index,
-            visualDescription: s.visualDescription,
-            narration: s.narration,
-            durationSec: s.durationSec,
-          })),
-        }),
-      });
-      const json = (await res.json()) as {
-        error?: string;
-        prompts?: SeedancePromptSceneOutput[];
-      };
-      if (!res.ok) {
-        setSeedancePromptError(json.error ?? "生成失败");
-        return;
-      }
-      const list = json.prompts ?? [];
-      if (!list.length) {
-        setSeedancePromptError("接口未返回 prompts，请重试或查看服务端日志");
-        return;
-      }
-      const next: Record<number, SeedancePromptSceneOutput> = {};
-      for (const p of list) {
-        next[p.index] = p;
-      }
-      setSeedancePromptByIndex(next);
-    } catch (e) {
-      setSeedancePromptError(
-        e instanceof Error ? e.message : "Seedance 文案生成失败",
-      );
-    } finally {
-      setSeedancePromptBusy(false);
-    }
-  }, [
-    profileId,
-    subject,
-    dynasty,
-    seriesTitle,
-    sliceTitle,
-    sliceAngle,
-    result,
-  ]);
 
-  const runSingleSeedancePrompt = useCallback(
-    async (sceneIndex: number) => {
-      if (!result?.scenes.length || !subject.trim()) return;
-      if (seedancePromptBusy) return;
+  const runPlanSceneKeyframes = useCallback(
+    async (
+      sceneIndex: number,
+      preserveFirstKeyframe: boolean,
+    ): Promise<SceneKeyframePlanUi | null> => {
+      if (!result?.scenes.length || !subject.trim()) return null;
       const s = result.scenes.find((x) => x.index === sceneIndex);
-      if (!s?.visualDescription.trim()) return;
-      setSeedanceSingleBusyIndex(sceneIndex);
-      setSeedancePromptError(null);
+      if (!s) return null;
+      setSceneKeyframeUiByScene((prev) => ({
+        ...prev,
+        [sceneIndex]: {
+          keyframeCount: 1,
+          keyframes: [],
+          planningBusy: true,
+          planningError: null,
+          generatingKeyframeIndex: null,
+        },
+      }));
       try {
-        const res = await fetch("/api/suggest-seedance-prompts", {
+        const res = await fetch("/api/plan-scene-keyframes", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -763,37 +809,47 @@ export function PersonStudioWorkspace() {
             seriesTitle: seriesTitle.trim() || undefined,
             sliceTitle: sliceTitle.trim() || undefined,
             sliceAngle: sliceAngle.trim() || undefined,
-            hook: result.hook,
-            scenes: [
-              {
-                index: s.index,
-                visualDescription: s.visualDescription,
-                narration: s.narration,
-                durationSec: s.durationSec,
-              },
-            ],
+            opening: result.storyArc.opening,
+            scene: s,
+            preserveFirstKeyframe,
           }),
         });
         const json = (await res.json()) as {
           error?: string;
-          prompts?: SeedancePromptSceneOutput[];
+          plan?: SceneKeyframePlanResult;
         };
         if (!res.ok) {
-          setSeedancePromptError(json.error ?? "生成失败");
-          return;
+          throw new Error(json.error ?? "规划失败");
         }
-        const p = json.prompts?.[0];
-        if (!p || p.index !== s.index) {
-          setSeedancePromptError("响应未包含本镜 Seedance 文案");
-          return;
+        if (!json.plan) throw new Error("接口未返回 plan");
+        const kf1Url =
+          preserveFirstKeyframe &&
+          assets[sceneIndex]?.status === "success" &&
+          assets[sceneIndex]?.url ?
+            assets[sceneIndex]!.url
+          : undefined;
+        const ui = buildSceneKeyframePlanUi(json.plan, kf1Url);
+        setSceneKeyframeUiByScene((prev) => ({ ...prev, [sceneIndex]: ui }));
+        if (json.plan.keyframeCount > 1) {
+          setSceneExpandedByScene((prev) => ({
+            ...prev,
+            [sceneIndex]: true,
+          }));
         }
-        setSeedancePromptByIndex((prev) => ({ ...prev, [p.index]: p }));
+        return ui;
       } catch (e) {
-        setSeedancePromptError(
-          e instanceof Error ? e.message : "Seedance 文案生成失败",
-        );
-      } finally {
-        setSeedanceSingleBusyIndex(null);
+        const msg = e instanceof Error ? e.message : "规划失败";
+        setSceneKeyframeUiByScene((prev) => ({
+          ...prev,
+          [sceneIndex]: {
+            keyframeCount: prev[sceneIndex]?.keyframeCount ?? 1,
+            keyframes: prev[sceneIndex]?.keyframes ?? [],
+            planningBusy: false,
+            planningError: msg,
+            generatingKeyframeIndex: null,
+          },
+        }));
+        return null;
       }
     },
     [
@@ -804,8 +860,219 @@ export function PersonStudioWorkspace() {
       sliceTitle,
       sliceAngle,
       result,
-      seedancePromptBusy,
+      assets,
     ],
+  );
+
+  const runSingleKeyframeAsset = useCallback(
+    async (
+      sceneIndex: number,
+      keyframeIndex: number,
+      visual: string,
+      referenceImageUrl: string,
+      opts?: { signal?: AbortSignal },
+    ): Promise<{ ok: boolean; cancelled?: boolean }> => {
+      const narration =
+        result?.scenes.find((x) => x.index === sceneIndex)?.narration ?? "";
+      setSceneKeyframeUiByScene((prev) => {
+        const cur = prev[sceneIndex];
+        if (!cur) return prev;
+        return {
+          ...prev,
+          [sceneIndex]: {
+            ...cur,
+            generatingKeyframeIndex: keyframeIndex,
+            keyframes: cur.keyframes.map((r) =>
+              r.keyframeIndex === keyframeIndex ?
+                { ...r, status: "running" as const, error: undefined }
+              : r,
+            ),
+          },
+        };
+      });
+      try {
+        const res = await fetch("/api/assets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sceneIndex,
+            keyframeIndex,
+            visualDescription: visual,
+            seriesTitle: seriesTitle.trim() || undefined,
+            sliceTitle: sliceTitle.trim() || undefined,
+            sliceAngle: sliceAngle.trim() || undefined,
+            narration: narration.trim() || undefined,
+            stylePreset,
+            projectSeed,
+            imageProfileId: imageProfileId || undefined,
+            subject: subject.trim() || undefined,
+            dynasty: dynasty.trim() || undefined,
+            referenceImageUrl,
+            referenceRole: "previous",
+          }),
+          signal: opts?.signal,
+        });
+        const json = (await res.json()) as {
+          error?: string;
+          url?: string;
+          projectSeed?: string;
+          provider?: string;
+        };
+        if (!res.ok) {
+          setError(String(json.error ?? `HTTP ${res.status}`));
+          setSceneKeyframeUiByScene((prev) => {
+            const cur = prev[sceneIndex];
+            if (!cur) return prev;
+            return {
+              ...prev,
+              [sceneIndex]: {
+                ...cur,
+                generatingKeyframeIndex: null,
+                keyframes: cur.keyframes.map((r) =>
+                  r.keyframeIndex === keyframeIndex ?
+                    {
+                      ...r,
+                      status: "failed" as const,
+                      error: json.error ?? `HTTP ${res.status}`,
+                    }
+                  : r,
+                ),
+              },
+            };
+          });
+          return { ok: false };
+        }
+        const url = json.url as string;
+        const seedForFile =
+          typeof json.projectSeed === "string" && json.projectSeed.trim() ?
+            json.projectSeed.trim()
+          : projectSeed;
+        const stem = `${seedForFile}-scene-img-${String(sceneIndex).padStart(2, "0")}-kf${String(keyframeIndex).padStart(2, "0")}`;
+        void persistSceneKeyframeImageQuietly(
+          url,
+          sceneIndex,
+          keyframeIndex,
+          stem,
+        );
+        setSceneKeyframeUiByScene((prev) => {
+          const cur = prev[sceneIndex];
+          if (!cur) return prev;
+          return {
+            ...prev,
+            [sceneIndex]: {
+              ...cur,
+              generatingKeyframeIndex: null,
+              keyframes: cur.keyframes.map((r) =>
+                r.keyframeIndex === keyframeIndex ?
+                  {
+                    ...r,
+                    status: "success" as const,
+                    url,
+                    provider: json.provider,
+                    error: undefined,
+                  }
+                : r,
+              ),
+            },
+          };
+        });
+        return { ok: true };
+      } catch (e) {
+        if (isAbortError(e) || opts?.signal?.aborted) {
+          setSceneKeyframeUiByScene((prev) => {
+            const cur = prev[sceneIndex];
+            if (!cur) return prev;
+            return {
+              ...prev,
+              [sceneIndex]: {
+                ...cur,
+                generatingKeyframeIndex: null,
+                keyframes: cur.keyframes.map((r) =>
+                  r.keyframeIndex === keyframeIndex ?
+                    { ...r, status: "failed" as const, error: "已停止" }
+                  : r,
+                ),
+              },
+            };
+          });
+          return { ok: false, cancelled: true };
+        }
+        const msg = e instanceof Error ? e.message : "请求失败";
+        setSceneKeyframeUiByScene((prev) => {
+          const cur = prev[sceneIndex];
+          if (!cur) return prev;
+          return {
+            ...prev,
+            [sceneIndex]: {
+              ...cur,
+              generatingKeyframeIndex: null,
+              keyframes: cur.keyframes.map((r) =>
+                r.keyframeIndex === keyframeIndex ?
+                  { ...r, status: "failed" as const, error: msg }
+                : r,
+              ),
+            },
+          };
+        });
+        return { ok: false };
+      }
+    },
+    [
+      result,
+      seriesTitle,
+      sliceTitle,
+      sliceAngle,
+      stylePreset,
+      projectSeed,
+      imageProfileId,
+      subject,
+      dynasty,
+      persistSceneKeyframeImageQuietly,
+    ],
+  );
+
+  const runSceneKeyframeFillMissing = useCallback(
+    async (sceneIndex: number, uiOverride?: SceneKeyframePlanUi) => {
+      const ui = uiOverride ?? sceneKeyframeUiByScene[sceneIndex];
+      if (!ui || ui.keyframeCount <= 1) return;
+      for (const kf of [...ui.keyframes].sort(
+        (a, b) => a.keyframeIndex - b.keyframeIndex,
+      )) {
+        if (kf.keyframeIndex <= 1) continue;
+        if (kf.status === "success" && kf.url?.trim()) continue;
+        const prevKf = ui.keyframes.find(
+          (x) => x.keyframeIndex === kf.keyframeIndex - 1,
+        );
+        const refUrl =
+          prevKf?.url?.trim() ??
+          (assets[sceneIndex]?.status === "success" ?
+            assets[sceneIndex]?.url
+          : undefined);
+        if (!refUrl?.trim()) {
+          setError(
+            `镜 ${sceneIndex} 须先完成关键帧 ${kf.keyframeIndex - 1} 或主静图，再生成关键帧 ${kf.keyframeIndex}`,
+          );
+          return;
+        }
+        const out = await runSingleKeyframeAsset(
+          sceneIndex,
+          kf.keyframeIndex,
+          kf.visualPrompt,
+          refUrl,
+        );
+        if (!out.ok || out.cancelled) break;
+      }
+    },
+    [sceneKeyframeUiByScene, assets, runSingleKeyframeAsset, setError],
+  );
+
+  const runSceneKeyframeOneClick = useCallback(
+    async (sceneIndex: number) => {
+      const ui = await runPlanSceneKeyframes(sceneIndex, true);
+      if (!ui || ui.planningError) return;
+      await runSceneKeyframeFillMissing(sceneIndex, ui);
+    },
+    [runPlanSceneKeyframes, runSceneKeyframeFillMissing],
   );
 
   const runExportSliceBundle = useCallback(async () => {
@@ -813,12 +1080,29 @@ export function PersonStudioWorkspace() {
     setExportBundleBusy(true);
     setSliceSaveHint(null);
     try {
-      const seedanceScenePrompts =
-        Object.keys(seedancePromptByIndex).length > 0 ?
-          Object.values(seedancePromptByIndex).sort(
-            (a, b) => a.index - b.index,
-          )
-        : undefined;
+      const sceneKeyframeBundles: Record<
+        number,
+        SliceExportSceneKeyframeBundleInput
+      > = {};
+      for (const [sk, ui] of Object.entries(sceneKeyframeUiByScene)) {
+        const sceneIdx = Number(sk);
+        if (!Number.isFinite(sceneIdx)) continue;
+        const extra = ui.keyframes
+          .filter((r) => r.keyframeIndex > 1)
+          .map((r) => ({
+            keyframeIndex: r.keyframeIndex,
+            ...(r.url?.trim() ? { url: r.url.trim() } : {}),
+            ...(r.visualPrompt.trim() ?
+              { visualPrompt: r.visualPrompt.trim() }
+            : {}),
+          }));
+        if (extra.length || ui.keyframeCount > 1) {
+          sceneKeyframeBundles[sceneIdx] = {
+            keyframeCount: ui.keyframeCount,
+            extraKeyframes: extra,
+          };
+        }
+      }
       const res = await fetch("/api/export-slice-bundle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -847,15 +1131,14 @@ export function PersonStudioWorkspace() {
           ),
           voiceoverFullText:
             voiceoverDraft.trim() || result?.voiceoverFullText?.trim() || undefined,
-          ...(seedanceScenePrompts?.length ?
-            { seedanceScenePrompts }
+          ...(Object.keys(sceneKeyframeBundles).length ?
+            { sceneKeyframeBundles }
           : {}),
         }),
       });
       const json = (await res.json()) as {
         error?: string;
         manifestPath?: string;
-        seedancePromptsPath?: string | null;
         exportFolder?: string;
         saved?: string[];
         errors?: string[];
@@ -864,12 +1147,8 @@ export function PersonStudioWorkspace() {
         setSliceSaveHint(json.error ?? "导出失败");
         return;
       }
-      const hintParts = [`manifest：${json.manifestPath ?? "manifest.json"}`];
-      if (json.seedancePromptsPath) {
-        hintParts.push(`Seedance：${json.seedancePromptsPath}`);
-      }
       setSliceSaveHint(
-        `已写入 slice-exports/${json.exportFolder ?? ""}（${hintParts.join("；")}）`,
+        `已写入 slice-exports/${json.exportFolder ?? ""}（manifest：${json.manifestPath ?? "manifest.json"}）`,
       );
     } catch (e) {
       setSliceSaveHint(e instanceof Error ? e.message : "导出失败");
@@ -892,7 +1171,7 @@ export function PersonStudioWorkspace() {
     latestCoverUrl,
     assets,
     voiceoverDraft,
-    seedancePromptByIndex,
+    sceneKeyframeUiByScene,
   ]);
 
   const sceneAudioStem = useCallback(
@@ -1025,8 +1304,8 @@ export function PersonStudioWorkspace() {
   const resetAssets = useCallback(() => {
     setAssets({});
     setSceneTtsByIndex({});
-    setSeedancePromptByIndex({});
-    setSeedancePromptError(null);
+    setSceneKeyframeUiByScene({});
+    setSceneExpandedByScene({});
   }, []);
 
   const runSuggestCharacters = async () => {
@@ -1142,21 +1421,15 @@ export function PersonStudioWorkspace() {
         );
         setResult(null);
         setVoiceoverDraft("");
-        setSeedancePromptByIndex({});
-        setSeedancePromptError(null);
         return;
       }
       const gen = json as GenerationResult;
       setResult(gen);
       setVoiceoverDraft(gen.voiceoverFullText ?? "");
-      setSeedancePromptByIndex({});
-      setSeedancePromptError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "网络错误");
       setResult(null);
       setVoiceoverDraft("");
-      setSeedancePromptByIndex({});
-      setSeedancePromptError(null);
     } finally {
       setLoading(false);
     }
@@ -1166,13 +1439,7 @@ export function PersonStudioWorkspace() {
   const runGenerateVoiceoverOnly = async () => {
     if (!result || result.pipelinePending !== "voiceover") return;
     if (!result.sceneSkeleton?.length) return;
-    const snap: StoryboardSpineSnapshot = {
-      hook: result.hook,
-      timeline: result.timeline,
-      sceneSkeleton: result.sceneSkeleton,
-      factNotes: result.factNotes,
-      complianceNote: result.complianceNote ?? null,
-    };
+    const snap = buildSpineSnapshotFromResult(result);
     setLoading(true);
     setError(null);
     try {
@@ -1208,8 +1475,6 @@ export function PersonStudioWorkspace() {
       setResult(gen);
       setVoiceoverDraft(gen.voiceoverFullText ?? "");
       setVoiceoverDraftPanelExpanded(false);
-      setSeedancePromptByIndex({});
-      setSeedancePromptError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "网络错误");
     } finally {
@@ -1343,13 +1608,7 @@ export function PersonStudioWorkspace() {
 
   const runRegenerateFromVoiceover = async () => {
     if (!result?.sceneSkeleton?.length) return;
-    const snap: StoryboardSpineSnapshot = {
-      hook: result.hook,
-      timeline: result.timeline,
-      sceneSkeleton: result.sceneSkeleton,
-      factNotes: result.factNotes,
-      complianceNote: result.complianceNote ?? null,
-    };
+    const snap = buildSpineSnapshotFromResult(result);
     setLoading(true);
     setError(null);
     resetAssets();
@@ -1685,14 +1944,9 @@ export function PersonStudioWorkspace() {
           setError(json.error ?? "上传失败");
           return;
         }
-        const uploadStem = `${projectSeed}-upload-${
-          typeof crypto !== "undefined" && "randomUUID" in crypto ?
-            crypto.randomUUID().slice(0, 10)
-          : `${Date.now()}`
-        }`;
         appendCoverToGalleryAndPersist({
           coverUrl: json.url.trim(),
-          seedForFile: uploadStem,
+          seedForFile: coverFileStem,
           provider: "tos",
           coverKind: "upload",
         });
@@ -1702,7 +1956,12 @@ export function PersonStudioWorkspace() {
         setCoverUploadBusy(false);
       }
     },
-    [subject, coverGallery.length, projectSeed, appendCoverToGalleryAndPersist],
+    [
+      subject,
+      coverGallery.length,
+      coverFileStem,
+      appendCoverToGalleryAndPersist,
+    ],
   );
 
   const runStandaloneCoverRequest = async (): Promise<boolean> => {
@@ -1746,105 +2005,22 @@ export function PersonStudioWorkspace() {
       const coverUrl = json.url as string;
       appendCoverToGalleryAndPersist({
         coverUrl,
-        seedForFile: projectSeed,
+        seedForFile: coverFileStem,
         provider: json.provider as string | undefined,
         coverKind: "generate",
       });
 
       return true;
-    } catch (e) {
+    } catch {
       setCoverRequest({ status: "failed" });
       return false;
     }
   };
 
-  const runAllAssets = async () => {
-    if (!result?.scenes.length) return;
-    setBatchBusy(true);
-    setError(null);
-    stopBatchRef.current = false;
-    try {
-      const ordered = [...result.scenes].sort((a, b) => a.index - b.index);
-      const urlByIndex: Record<number, string> = {};
-      const standaloneU = latestCoverUrl;
-      for (const s of ordered) {
-        if (stopBatchRef.current) break;
-        const ac = new AbortController();
-        batchAssetAbortRef.current = ac;
-        const ref = resolveReferenceForScene(
-          s.index,
-          urlByIndex,
-          assets,
-          standaloneU,
-        );
-        const out = await runSingleAsset(
-          s.index,
-          s.visualDescription,
-          s.narration,
-          ref,
-          { signal: ac.signal },
-        );
-        if (out.cancelled || stopBatchRef.current) break;
-        if (out.success && out.url) {
-          urlByIndex[s.index] = out.url;
-        }
-        if (stopBatchRef.current) break;
-      }
-    } finally {
-      setBatchBusy(false);
-    }
-  };
 
   const runCoverOnly = async () => {
-    setBatchBusy(true);
     setError(null);
-    try {
-      await runStandaloneCoverRequest();
-    } finally {
-      setBatchBusy(false);
-    }
-  };
-
-  /** 各镜顺序出图：镜 1 为正片首镜（文生）；镜 ≥2 以封面为图生图参考。场面跳变可单镜改「按切片内容生成」。 */
-  const runRemainingAssetsFromCover = async () => {
-    if (!result?.scenes.length) return;
-    const coverUrl = latestCoverUrl;
-    if (!coverUrl) {
-      setError("请先在「步骤 2 · 生成封面图」成功生成封面图，再按封面批量生成镜头。");
-      return;
-    }
-    setBatchBusy(true);
-    setError(null);
-    stopBatchRef.current = false;
-    try {
-      const ordered = [...result.scenes]
-        .filter((s) => s.index >= 1)
-        .sort((a, b) => a.index - b.index);
-      const urlByIndex: Record<number, string> = {};
-      const coverRef = {
-        referenceImageUrl: coverUrl,
-        referenceRole: "cover" as const,
-      };
-      for (const s of ordered) {
-        if (stopBatchRef.current) break;
-        const ac = new AbortController();
-        batchAssetAbortRef.current = ac;
-        const out = await runSingleAsset(
-          s.index,
-          s.visualDescription,
-          s.narration,
-          coverRef,
-          { signal: ac.signal },
-        );
-        if (out.cancelled || stopBatchRef.current) break;
-        if (out.success && out.url) {
-          urlByIndex[s.index] = out.url;
-        }
-        if (stopBatchRef.current) break;
-      }
-    } finally {
-      setBatchBusy(false);
-    }
+    await runStandaloneCoverRequest();
   };
 
   return (
@@ -2096,7 +2272,7 @@ export function PersonStudioWorkspace() {
                 </div>
                 <div className="grid gap-4 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] lg:gap-6">
                   <label className="block min-w-0">
-                    <span className={groupTitleClass}>强冲突预设</span>
+                    <span className={groupTitleClass}>热点情绪预设</span>
                     <select
                       className={`${fieldClass} mt-1.5 cursor-pointer`}
                       value={
@@ -2135,7 +2311,7 @@ export function PersonStudioWorkspace() {
                   <div>
                     <h3 className={stepBlockTitleClass}>人物与背景</h3>
                     <p className="mt-1 text-[11px] text-zinc-600">
-                      点「AI 推荐相关人物」按系列生成人选、形象与朝代；再次点击会排除当前列表中的人选。
+                      点「AI 推荐相关人物」先按系列生成人选，再批量写形象与朝代（两次模型调用，略慢）；再次点击会排除当前列表并整批重跑。
                     </p>
                   </div>
                   <button
@@ -2144,7 +2320,7 @@ export function PersonStudioWorkspace() {
                     onClick={runSuggestCharacters}
                     className={`${aiActionClass} w-full sm:w-auto sm:shrink-0`}
                   >
-                    {suggestCharsBusy ? "推荐中…" : "AI 推荐相关人物"}
+                    {suggestCharsBusy ? "推荐中（人选+形象）…" : "AI 推荐相关人物"}
                   </button>
                 </div>
                 {charsHint ? (
@@ -2167,12 +2343,13 @@ export function PersonStudioWorkspace() {
                           >
                             <span className="block text-xs text-zinc-200">
                               {c.name}
+                              {c.dynasty ?
+                                <span className="font-medium text-sky-200/80">
+                                  {" "}
+                                  {c.dynasty}
+                                </span>
+                              : null}
                             </span>
-                            {c.dynasty ? (
-                              <span className="mt-0.5 block text-[10px] font-medium text-sky-200/80">
-                                {c.dynasty}
-                              </span>
-                            ) : null}
                             {c.appearance ? (
                               <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">
                                 {c.appearance}
@@ -2246,7 +2423,7 @@ export function PersonStudioWorkspace() {
                 根据步骤 1 的<strong className="font-medium text-zinc-500">人物、形象描述</strong>
                 与<strong className="font-medium text-zinc-500">朝代/背景</strong>
                 ，结合下方<strong className="font-medium text-zinc-500">画风预设</strong>
-                生成竖屏外宣底图；纯画面无内嵌字，人物居左、右侧留白。
+                生成竖屏外宣底图；纯画面无内嵌字，人物居左，背景虚化、右侧留叠字区。
               </p>
             </div>
             <div className="mt-5 border-t border-zinc-800/70 pt-5">
@@ -2278,7 +2455,6 @@ export function PersonStudioWorkspace() {
                   <button
                     type="button"
                     disabled={
-                      batchBusy ||
                       coverUploadBusy ||
                       coverRequest.status === "running" ||
                       !subject.trim() ||
@@ -2299,8 +2475,8 @@ export function PersonStudioWorkspace() {
                   <button
                     type="button"
                     disabled={
-                      batchBusy ||
                       coverUploadBusy ||
+                      coverRequest.status === "running" ||
                       !canGenerateStandaloneCover ||
                       coverGallery.length >= MAX_COVER_GALLERY
                     }
@@ -2376,8 +2552,11 @@ export function PersonStudioWorkspace() {
                             {!isSelected && (
                               <button
                                 type="button"
-                                disabled={batchBusy || coverDeleteBusy}
-                                title="设为此封面为按封面批量生成镜头的参考图"
+                                disabled={
+                                  coverDeleteBusy ||
+                                  coverRequest.status === "running"
+                                }
+                                title="设为此封面为分镜图生图参考"
                                 onClick={() => setSelectedCoverId(item.id)}
                                 className="w-full rounded-md border border-amber-800/45 bg-amber-950/25 px-2 py-1.5 text-center text-[10px] font-semibold leading-tight text-amber-100/95 transition hover:border-amber-600/55 hover:bg-amber-900/35 disabled:cursor-not-allowed disabled:opacity-40"
                               >
@@ -2387,7 +2566,10 @@ export function PersonStudioWorkspace() {
                             {isSelected && coverGallery.length > 1 && (
                               <button
                                 type="button"
-                                disabled={batchBusy || coverDeleteBusy}
+                                disabled={
+                                  coverDeleteBusy ||
+                                  coverRequest.status === "running"
+                                }
                                 title="取消参考图"
                                 onClick={() => setSelectedCoverId(null)}
                                 className="w-full rounded-md border border-emerald-800/45 bg-emerald-950/25 px-2 py-1.5 text-center text-[10px] font-semibold leading-tight text-emerald-100/95 transition hover:border-emerald-600/55 hover:bg-emerald-900/35 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2397,7 +2579,10 @@ export function PersonStudioWorkspace() {
                             )}
                             <button
                               type="button"
-                              disabled={batchBusy || coverDeleteBusy}
+                              disabled={
+                                coverDeleteBusy ||
+                                coverRequest.status === "running"
+                              }
                               title="删除此封面"
                               onClick={() => void handleDeleteSingleCover(item.id)}
                               className="w-full rounded-md border border-rose-800/45 bg-rose-950/25 px-2 py-1.5 text-center text-[10px] font-semibold leading-tight text-rose-100/95 transition hover:border-rose-600/55 hover:bg-rose-900/35 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2530,8 +2715,8 @@ export function PersonStudioWorkspace() {
             <p className={sectionLabelClass}>步骤 4 · 生成文案与分镜</p>
             <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-zinc-500">
               叙事时长在步骤 3「切片标题」行右侧选择，会参与「AI
-              推荐切片标题」与主生成镜数体量。请先设扩写切段与叙事基调。主流程固定为三步：叙事骨架（L1）→
-              整稿口播（L2）→ 分镜扩写（L3），便于在中间确认口播再出分镜。完成后在下方批量出静帧。
+              推荐切片标题」与主生成镜数体量。请先设扩写切段与叙事基调。主流程三步：叙事方案（L1）→
+              整稿口播（L2）→ 分镜扩写（L3）；可在 L1 后粘贴口播跳过 AI 撰稿。完成后在下方按镜出图或批量生成本镜静帧。
             </p>
             <div className="mt-4 grid grid-cols-1 gap-4 border-t border-zinc-800/70 pt-4 sm:grid-cols-2 sm:items-end">
               <label className="block min-w-0">
@@ -2572,21 +2757,14 @@ export function PersonStudioWorkspace() {
               <button
                 type="button"
                 onClick={() => void runGenerate()}
-                disabled={
-                  loading ||
-                  !subject.trim() ||
-                  result?.pipelinePending === "scenes" ||
-                  result?.pipelinePending === "voiceover"
-                }
+                disabled={loading || !subject.trim()}
                 className={stepPrimaryGenerateStandaloneBtnClass}
               >
                 {loading ?
                   "生成中…"
-                : result?.pipelinePending === "scenes" ?
-                  "下一步：整稿区「生成分镜」"
-                : result?.pipelinePending === "voiceover" ?
-                  "叙事骨架（L1）已生成"
-                : "生成叙事骨架（L1）"}
+                : result ?
+                  "重新生成叙事方案（L1）"
+                : "生成叙事方案（L1）"}
               </button>
             </div>
           </footer>
@@ -2601,6 +2779,63 @@ export function PersonStudioWorkspace() {
 
       {result && (
         <>
+          <nav
+            className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950/40 px-4 py-3 text-[11px] sm:px-5"
+            aria-label="叙事流水线进度"
+          >
+            {(
+              [
+                {
+                  id: "l1",
+                  label: "L1 叙事方案",
+                  done: Boolean(result.storyArc?.opening),
+                  active: false,
+                },
+                {
+                  id: "l2",
+                  label: "L2 整稿口播",
+                  done:
+                    result.pipelinePending !== "voiceover" &&
+                    Boolean(
+                      result.voiceoverFullText?.trim() ||
+                        result.voiceoverParagraphs?.length,
+                    ),
+                  active: result.pipelinePending === "voiceover",
+                },
+                {
+                  id: "l3",
+                  label: "L3 分镜扩写",
+                  done: result.scenes.length > 0,
+                  active: result.pipelinePending === "scenes",
+                },
+              ] as const
+            ).map((step, i) => (
+              <span key={step.id} className="flex items-center gap-2">
+                {i > 0 ?
+                  <span className="text-zinc-700" aria-hidden>
+                    →
+                  </span>
+                : null}
+                <span
+                  className={
+                    step.done ?
+                      "rounded-md bg-emerald-950/50 px-2 py-0.5 font-medium text-emerald-200/90 ring-1 ring-emerald-900/40"
+                    : step.active ?
+                      "rounded-md bg-amber-950/50 px-2 py-0.5 font-medium text-amber-100 ring-1 ring-amber-900/45"
+                    : "rounded-md px-2 py-0.5 text-zinc-500"
+                  }
+                >
+                  {step.label}
+                  {step.done ?
+                    " ✓"
+                  : step.active ?
+                    " · 当前"
+                  : ""}
+                </span>
+              </span>
+            ))}
+          </nav>
+
           <section className="overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-900/40 p-0 shadow-xl shadow-black/20 ring-1 ring-zinc-800/35">
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 bg-zinc-950/30 px-5 py-3 sm:px-6">
               <div className="flex min-w-0 flex-1 items-start gap-2 sm:gap-3">
@@ -2612,8 +2847,8 @@ export function PersonStudioWorkspace() {
                   aria-controls="historai-narrative-skeleton-panel-body"
                   title={
                     narrativeSkeletonPanelExpanded ?
-                      "收起 L1 叙事骨架"
-                    : "展开 L1 叙事骨架"
+                      "收起 L1 叙事方案"
+                    : "展开 L1 叙事方案"
                   }
                 >
                   <svg
@@ -2633,12 +2868,14 @@ export function PersonStudioWorkspace() {
                 </button>
                 <div className="min-w-0 flex-1">
                   <h2 className="font-display text-base font-medium text-amber-100/95">
-                    黄金开头、时间线与分镜骨架
+                    叙事方案
                   </h2>
-                  <p className="mt-0.5 text-[11px] text-zinc-500">L1 叙事骨架</p>
-                  {!narrativeSkeletonPanelExpanded && result.hook ?
+                  <p className="mt-0.5 text-[11px] text-zinc-500">
+                    L1 · 故事弧 + 镜序表
+                  </p>
+                  {!narrativeSkeletonPanelExpanded && result.storyArc?.opening ?
                     <p className="mt-2 line-clamp-2 text-sm leading-snug text-zinc-400">
-                      {result.hook}
+                      {result.storyArc.opening}
                     </p>
                   : null}
                 </div>
@@ -2655,17 +2892,22 @@ export function PersonStudioWorkspace() {
                 id="historai-narrative-skeleton-panel-body"
                 className="p-5 sm:p-6"
               >
-                <p className="text-lg font-medium leading-relaxed text-zinc-100 sm:text-xl">
-                  {result.hook}
-                </p>
+                <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
+                    开场
+                  </p>
+                  <p className="mt-2 text-lg font-medium leading-relaxed text-zinc-100 sm:text-xl">
+                    {result.storyArc.opening}
+                  </p>
+                </div>
 
                 <div className="mt-6">
                   <button
                     type="button"
-                    onClick={() => setNarrativeTimelineExpanded((v) => !v)}
+                    onClick={() => setNarrativeStoryArcExpanded((v) => !v)}
                     className="flex w-full items-center gap-2 rounded-lg py-2 pl-0 pr-2 text-left transition hover:bg-zinc-800/40"
-                    aria-expanded={narrativeTimelineExpanded}
-                    aria-controls="historai-l1-timeline"
+                    aria-expanded={narrativeStoryArcExpanded}
+                    aria-controls="historai-l1-story-arc"
                   >
                     <span className="shrink-0 rounded-lg p-1 text-zinc-500">
                       <svg
@@ -2673,7 +2915,7 @@ export function PersonStudioWorkspace() {
                         fill="currentColor"
                         aria-hidden
                         className={`h-4 w-4 transition-transform duration-200 ${
-                          narrativeTimelineExpanded ? "rotate-0" : "-rotate-90"
+                          narrativeStoryArcExpanded ? "rotate-0" : "-rotate-90"
                         }`}
                       >
                         <path
@@ -2684,38 +2926,73 @@ export function PersonStudioWorkspace() {
                       </svg>
                     </span>
                     <span className="text-sm font-semibold text-amber-100/90">
-                      时间线
+                      故事弧
                     </span>
                     <span className="text-xs text-zinc-500">
-                      共 {result.timeline.length} 段
+                      {result.storyArc.milestones.length} 节点 + 高峰
                     </span>
                   </button>
-                  {narrativeTimelineExpanded ?
-                    <ol
-                      id="historai-l1-timeline"
-                      className="mt-4 space-y-4"
-                    >
-                      {result.timeline.map((t, i) => (
-                        <li
-                          key={i}
-                          className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4"
-                        >
-                          {t.label && (
-                            <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
-                              {t.label}
+                  {narrativeStoryArcExpanded ?
+                    <div id="historai-l1-story-arc" className="mt-4 space-y-4">
+                      <ol className="space-y-3">
+                        {result.storyArc.milestones.map((m, i) => (
+                          <li
+                            key={i}
+                            className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4"
+                          >
+                            {m.label ?
+                              <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
+                                {m.label}
+                                {m.sceneRange ?
+                                  <span className="ml-2 font-normal normal-case text-zinc-500">
+                                    镜 {m.sceneRange}
+                                  </span>
+                                : null}
+                              </p>
+                            : m.sceneRange ?
+                              <p className="text-xs text-zinc-500">
+                                镜 {m.sceneRange}
+                              </p>
+                            : null}
+                            <p className="mt-2 text-sm leading-relaxed text-zinc-200">
+                              {m.intent}
                             </p>
-                          )}
-                          <p className="mt-2 text-sm leading-relaxed text-zinc-200">
-                            {t.text}
-                          </p>
-                          {t.sources?.length ?
-                            <p className="mt-2 text-xs text-zinc-500">
-                              参考：{t.sources.join("；")}
-                            </p>
+                            {m.sources?.length ?
+                              <p className="mt-2 text-xs text-zinc-500">
+                                参考：{m.sources.join("；")}
+                              </p>
+                            : null}
+                          </li>
+                        ))}
+                      </ol>
+                      <div className="rounded-xl border border-amber-900/50 bg-amber-950/25 p-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-amber-200/90">
+                          {result.storyArc.peak.label}
+                          {result.storyArc.peak.sceneRange ?
+                            <span className="ml-2 font-normal normal-case text-amber-200/60">
+                              镜 {result.storyArc.peak.sceneRange}
+                            </span>
                           : null}
-                        </li>
-                      ))}
-                    </ol>
+                        </p>
+                        <p className="mt-2 text-sm leading-relaxed text-zinc-100">
+                          {result.storyArc.peak.intent}
+                        </p>
+                        {result.storyArc.peak.sources?.length ?
+                          <p className="mt-2 text-xs text-zinc-500">
+                            参考：
+                            {result.storyArc.peak.sources.join("；")}
+                          </p>
+                        : null}
+                      </div>
+                      <p className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4 text-sm leading-relaxed text-zinc-300">
+                        <span className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
+                          收束
+                        </span>
+                        <span className="mt-2 block">
+                          {result.storyArc.closing}
+                        </span>
+                      </p>
+                    </div>
                   : null}
                 </div>
 
@@ -2745,7 +3022,7 @@ export function PersonStudioWorkspace() {
                         </svg>
                       </span>
                       <span className="text-sm font-semibold text-amber-100/90">
-                        分镜骨架
+                        镜序表
                       </span>
                       <span className="text-xs text-zinc-500">
                         共 {result.sceneSkeleton.length} 镜
@@ -2776,22 +3053,25 @@ export function PersonStudioWorkspace() {
                     : null}
                   </div>
                 : null}
-                {result.factNotes?.length ?
+                {result.reviewChecklist.factsToVerify.length ||
+                result.reviewChecklist.publishCautions ?
                   <div className="mt-6 rounded-xl border border-amber-900/40 bg-amber-950/20 p-4">
                     <p className="text-xs font-medium text-amber-200">
-                      发布前复核
+                      发布前核对（附件）
                     </p>
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-100/80">
-                      {result.factNotes.map((n, i) => (
-                        <li key={i}>{n}</li>
-                      ))}
-                    </ul>
+                    {result.reviewChecklist.factsToVerify.length ?
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-100/80">
+                        {result.reviewChecklist.factsToVerify.map((n, i) => (
+                          <li key={i}>{n}</li>
+                        ))}
+                      </ul>
+                    : null}
+                    {result.reviewChecklist.publishCautions ?
+                      <p className="mt-3 text-sm text-amber-100/70">
+                        {result.reviewChecklist.publishCautions}
+                      </p>
+                    : null}
                   </div>
-                : null}
-                {result.complianceNote ?
-                  <p className="mt-4 text-sm text-zinc-500">
-                    {result.complianceNote}
-                  </p>
                 : null}
               </div>
             : null}
@@ -2845,10 +3125,10 @@ export function PersonStudioWorkspace() {
                     <p className={sectionLabelClass}>整稿口播（L2）</p>
                     <h2 className="mt-1 font-display text-base font-medium text-amber-100/95">
                       {result.pipelinePending === "voiceover" ?
-                        "叙事骨架已定 · 请生成或粘贴整稿口播"
+                        "L1 已定 · AI 生成或粘贴口播后扩写分镜"
                       : result.pipelinePending === "scenes" ?
-                        "请确认口播后再生成分镜"
-                      : "顺读主干 · 可编辑后可重出分镜"}
+                        "请确认口播后再扩写分镜（L3）"
+                      : "顺读主干 · 可编辑后重出分镜"}
                     </h2>
                     {result.pipelinePending !== "voiceover" &&
                     !voiceoverDraftPanelExpanded &&
@@ -2869,7 +3149,7 @@ export function PersonStudioWorkspace() {
                       !result.sceneSkeleton?.length
                     }
                     onClick={() => void runGenerateVoiceoverOnly()}
-                    title="在已定的叙事骨架上生成整稿口播（L2）"
+                    title="在已定的 L1 叙事方案上生成整稿口播（L2）"
                     className={voiceoverToolbarPrimaryBtn}
                   >
                     {loading ? "生成中…" : "生成整稿口播（L2）"}
@@ -2880,7 +3160,6 @@ export function PersonStudioWorkspace() {
                   disabled={
                     voiceoverTtsBusy ||
                     loading ||
-                    result.pipelinePending === "voiceover" ||
                     !voiceoverDraft.trim() ||
                     (volcTtsVoicePreset === VOLCENGINE_TTS_VOICE_CUSTOM &&
                       !volcTtsVoiceCustom.trim())
@@ -2917,14 +3196,16 @@ export function PersonStudioWorkspace() {
                     !voiceoverDraft.trim()
                   }
                   onClick={() => void runRegenerateFromVoiceover()}
-                  title="保留当前 L1（黄金开头、时间线、分镜骨架），按下方口播生成分镜与画面描述（会清空已出图状态）"
+                  title="保留当前 L1（故事弧与镜序表），按下方口播扩写分镜（会清空已出图状态）"
                   className={voiceoverToolbarPrimaryBtn}
                 >
                   {loading ?
                     "请求中…"
                   : result.pipelinePending === "scenes" ?
-                    "生成分镜与画面稿"
-                  : "按当前口播重出分镜"}
+                    "扩写分镜（L3）"
+                  : result.pipelinePending === "voiceover" ?
+                    "按当前口播扩写分镜（L3）"
+                  : "按当前口播重出分镜（L3）"}
                 </button>
                 </div>
               </div>
@@ -3020,26 +3301,25 @@ export function PersonStudioWorkspace() {
                 : null}
               </div>
             : null}
-            {result.pipelinePending === "voiceover" ? (
-              <div className="p-5 sm:p-6">
-                <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-4 py-6 text-center text-sm text-zinc-400">
-                  尚未生成整稿口播。请点击本区顶部工具栏「
-                  <span className="text-amber-200/90">生成整稿口播（L2）</span>
-                  」（豆包试听左侧）生成口播稿。
-                </div>
-              </div>
-            ) : voiceoverDraftPanelExpanded ?
+            {result.pipelinePending === "voiceover" ||
+            voiceoverDraftPanelExpanded ?
               <div
                 id="historai-voiceover-draft-panel"
                 className="p-5 sm:p-6"
               >
                 <p className="mb-3 text-[12px] leading-relaxed text-zinc-500">
-                  以下为当前口播稿。修改后可「豆包语音试听」（上方选音色；
-                  服务端需配置 VOLCENGINE_TTS_*），再点击右侧「
-                  {result.pipelinePending === "scenes" ?
-                    "生成分镜与画面稿"
-                  : "按当前口播重出分镜"}
-                  」：请在<strong className="text-zinc-400">每镜口播之间留一空行</strong>
+                  {result.pipelinePending === "voiceover" ?
+                    "可点击「生成整稿口播（L2）」由 AI 撰稿，或在下方直接粘贴口播后「按当前口播扩写分镜（L3）」。"
+                  : "修改口播后可「豆包语音试听」，再点击「"}
+                  {result.pipelinePending !== "voiceover" ?
+                    <>
+                      {result.pipelinePending === "scenes" ?
+                        "扩写分镜（L3）"
+                      : "按当前口播重出分镜（L3）"}
+                      」。
+                    </>
+                  : null}
+                  请在<strong className="text-zinc-400">每镜口播之间留一空行</strong>
                   ，段数须与镜数一致（
                   {result.sceneSkeleton?.length ?? result.scenes.length}{" "}
                   段）。
@@ -3050,33 +3330,11 @@ export function PersonStudioWorkspace() {
                   onChange={(e) => setVoiceoverDraft(e.target.value)}
                   spellCheck={false}
                   aria-label="整稿口播"
+                  placeholder="每镜一段口播，镜与镜之间空一行…"
                 />
               </div>
             : null}
           </section>
-
-          {result.pipelinePending === "voiceover" ? (
-            <section className="rounded-2xl border border-sky-900/35 bg-sky-950/15 px-5 py-4 sm:px-6">
-              <p className="text-sm font-medium text-sky-100/95">
-                当前仅有 L1（黄金开头、时间线、分镜骨架），整稿口播待生成。
-              </p>
-              <p className="mt-2 text-[12px] leading-relaxed text-sky-100/75">
-                使用整稿口播区顶部「生成整稿口播（L2）」（在豆包试听左侧），完成后再编辑并扩写分镜。
-              </p>
-            </section>
-          ) : null}
-
-          {result.pipelinePending === "scenes" ? (
-            <section className="rounded-2xl border border-amber-900/35 bg-amber-950/15 px-5 py-4 sm:px-6">
-              <p className="text-sm font-medium text-amber-100/95">
-                当前已有整稿口播，尚未生成分镜表（L3）。
-              </p>
-              <p className="mt-2 text-[12px] leading-relaxed text-amber-100/70">
-                确认口播后可「豆包语音试听」（配置火山 TTS
-                后），再点击整稿区「生成分镜与画面稿」；完成后下方会出现分镜表与出图入口。
-              </p>
-            </section>
-          ) : null}
 
           {result && !result.pipelinePending ? (
           <section className="overflow-hidden rounded-2xl border border-zinc-800/80 bg-gradient-to-b from-zinc-900/45 via-zinc-950/50 to-zinc-950/70 shadow-xl shadow-black/25 ring-1 ring-zinc-800/40">
@@ -3114,32 +3372,8 @@ export function PersonStudioWorkspace() {
                   <button
                     type="button"
                     disabled={
-                      batchBusy ||
                       sceneTtsBatchBusy ||
-                      !latestCoverUrl
-                    }
-                    onClick={() => void runRemainingAssetsFromCover()}
-                    className={storyboardBatchToolbarBtn}
-                  >
-                    {batchBusy ? "生成中…" : "按封面批量"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      batchBusy ||
-                      sceneTtsBatchBusy ||
-                      !result?.scenes.length
-                    }
-                    onClick={runAllAssets}
-                    className={storyboardBatchToolbarBtn}
-                  >
-                    {batchBusy ? "批量生成中…" : "按上一镜批量"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      sceneTtsBatchBusy ||
-                      batchBusy ||
+                      loading ||
                       !canBatchSceneTts ||
                       !result?.scenes.some((sc) => sc.narration.trim())
                     }
@@ -3152,8 +3386,8 @@ export function PersonStudioWorkspace() {
                     type="button"
                     disabled={
                       exportBundleBusy ||
-                      batchBusy ||
                       sceneTtsBatchBusy ||
+                      loading ||
                       !canExportSliceBundle
                     }
                     onClick={() => void runExportSliceBundle()}
@@ -3161,37 +3395,6 @@ export function PersonStudioWorkspace() {
                   >
                     {exportBundleBusy ? "导出中…" : "导出资源"}
                   </button>
-                  <button
-                    type="button"
-                    disabled={
-                      seedancePromptBusy ||
-                      seedanceSingleBusyIndex !== null ||
-                      loading ||
-                      batchBusy ||
-                      sceneTtsBatchBusy ||
-                      exportBundleBusy ||
-                      !result?.scenes.length ||
-                      !subject.trim()
-                    }
-                    onClick={() => void runBatchSeedancePrompts()}
-                    className={`${storyboardBatchToolbarBtn} ring-1 ring-violet-600/35`}
-                    title="按导演思维拆解各镜 visualDescription，生成 Seedance 图生视频适用文案（分批调用模型）"
-                  >
-                    {seedancePromptBusy ? "生成中…" : "批量 Seedance 文案"}
-                  </button>
-                  {batchBusy ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        stopBatchRef.current = true;
-                        batchAssetAbortRef.current?.abort();
-                        setBatchBusy(false);
-                      }}
-                      className={storyboardBatchToolbarStopBtn}
-                    >
-                      停止生成
-                    </button>
-                  ) : null}
                   {sceneTtsBatchBusy ? (
                     <button
                       type="button"
@@ -3208,368 +3411,52 @@ export function PersonStudioWorkspace() {
             </div>
 
             <div className="px-3 pb-5 pt-1 sm:px-5 sm:pb-6">
-              <div className="overflow-hidden rounded-xl border border-zinc-800/55 bg-zinc-950/35 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] ring-1 ring-black/25">
-                <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px] border-separate border-spacing-0 text-left text-sm">
-                <thead>
-                  <tr className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                    <th className="sticky top-0 z-10 w-[4.5rem] border-b border-zinc-800/80 bg-zinc-950/98 py-3.5 pr-2 pl-3 backdrop-blur-md sm:w-[5rem] sm:pl-4">
-                      镜号
-                    </th>
-                    <th className="sticky top-0 z-10 w-[7.5rem] border-b border-zinc-800/80 bg-zinc-950/98 py-3.5 pr-2 backdrop-blur-md sm:w-[8rem]">
-                      状态
-                    </th>
-                    <th className="sticky top-0 z-10 min-w-[220px] border-b border-zinc-800/80 bg-zinc-950/98 py-3.5 pr-3 backdrop-blur-md">
-                      画面与预览
-                    </th>
-                    <th className="sticky top-0 z-10 min-w-[160px] border-b border-zinc-800/80 bg-zinc-950/98 py-3.5 pr-3 backdrop-blur-md">
-                      口播
-                    </th>
-                    <th className="sticky top-0 z-10 min-w-[13.5rem] border-b border-zinc-800/80 bg-zinc-950/98 py-3.5 pr-4 pl-1 backdrop-blur-md">
-                      操作
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="[&_tr:last-child]:border-b-0">
-                  {result.scenes.map((s) => {
-                    const row = assets[s.index];
-                    const imgBadge =
-                      row?.status === "running" ? (
-                        <span className={badgeRunning}>生成中</span>
-                      ) : row?.status === "success" ? (
-                        <span className={badgeSuccess}>已出图</span>
-                      ) : row?.status === "failed" ? (
-                        <span className={badgeFail} title={row?.error}>
-                          失败
-                        </span>
-                      ) : (
-                        <span className={badgeMuted}>未生成</span>
-                      );
-                    const ttsRow = sceneTtsByIndex[s.index];
-                    const ttsBadge =
-                      ttsRow?.status === "running" ? (
-                        <span className={badgeRunning}>合成中</span>
-                      ) : ttsRow?.status === "success" ? (
-                        <span className={badgeSuccess}>已保存</span>
-                      ) : ttsRow?.status === "failed" ? (
-                        <span className={badgeFail} title={ttsRow.error}>
-                          失败
-                        </span>
-                      ) : (
-                        <span className={badgeMuted}>未生成</span>
-                      );
-                    return (
-                      <tr
-                        key={s.index}
-                        className="group border-b border-zinc-800/45 align-top transition-colors hover:bg-zinc-900/25"
-                      >
-                        <td className="py-4 pr-2 pl-3 align-top sm:pl-4">
-                          <div className="flex flex-col items-center gap-2">
-                            <span
-                              className="flex size-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-zinc-800/95 to-zinc-900/95 text-sm font-bold tabular-nums text-amber-100 shadow-sm ring-2 ring-amber-600/20 ring-offset-2 ring-offset-zinc-950"
-                              aria-label={`第 ${s.index} 镜`}
-                            >
-                              {s.index}
-                            </span>
-                            <span className="rounded-md bg-zinc-900/90 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-zinc-400 ring-1 ring-zinc-700/70">
-                              {s.durationSec}s
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-4 pr-2 align-top">
-                          <div className="flex max-w-[12rem] flex-col gap-2">
-                            <div className="rounded-lg border border-zinc-800/60 bg-zinc-950/50 px-2 py-2 ring-1 ring-zinc-800/35">
-                              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                                <span className="text-[9px] font-semibold uppercase tracking-wider text-zinc-600">
-                                  静帧
-                                </span>
-                                {imgBadge}
-                              </div>
-                              {row?.status === "failed" && row.error ? (
-                                <p className="mt-1.5 text-[10px] leading-snug text-rose-300/95">
-                                  {row.error}
-                                </p>
-                              ) : null}
-                            </div>
-                            <div className="rounded-lg border border-zinc-800/60 bg-zinc-950/50 px-2 py-2 ring-1 ring-zinc-800/35">
-                              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                                <span className="text-[9px] font-semibold uppercase tracking-wider text-zinc-600">
-                                  语音
-                                </span>
-                                {ttsBadge}
-                              </div>
-                              {ttsRow?.status === "failed" && ttsRow.error ? (
-                                <p className="mt-1.5 text-[10px] leading-snug text-rose-300/95">
-                                  {ttsRow.error}
-                                </p>
-                              ) : null}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="py-4 pr-3 align-top text-zinc-300">
-                          <div className="rounded-xl border border-zinc-800/65 bg-gradient-to-b from-zinc-950/55 to-zinc-950/30 p-3 ring-1 ring-zinc-800/40">
-                            <p className="max-w-md text-[13px] leading-relaxed whitespace-pre-wrap text-zinc-300/95">
-                              {s.visualDescription}
-                            </p>
-                          </div>
-                          <div className="mt-3 flex max-w-[14rem] flex-col gap-2">
-                            {row?.url ? (
-                              <div className="overflow-hidden rounded-xl bg-black/50 shadow-inner ring-1 ring-zinc-700/80 transition group-hover:ring-zinc-600/70">
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={row.url}
-                                  alt={`第 ${s.index} 镜静帧`}
-                                  className="aspect-[9/16] max-h-44 w-full object-cover object-center"
-                                />
-                              </div>
-                            ) : null}
-                          </div>
-                        </td>
-                        <td className="py-4 pr-3 align-top">
-                          <div className="rounded-xl border border-zinc-800/65 bg-gradient-to-b from-zinc-950/55 to-zinc-950/30 p-3 ring-1 ring-zinc-800/40">
-                            <p className="text-[13px] leading-relaxed text-zinc-300/95">
-                              {s.narration}
-                            </p>
-                          </div>
-                        </td>
-                        <td className="py-4 pr-4 pl-1 align-top">
-                          <div className={storyboardOpStack}>
-                            {s.index > 1 ? (
-                              <div className="grid grid-cols-2 gap-1.5">
-                                <button
-                                  type="button"
-                                  disabled={row?.status === "running"}
-                                  title={
-                                    "与顶部「按上一镜批量」同一规则：优先以上一镜成片为参考（支持图生图时）；上一镜尚未出图则用封面图。"
-                                  }
-                                  className={storyboardOpPrimaryBtn}
-                                  onClick={() => {
-                                    const urlBy: Record<number, string> = {};
-                                    for (const [k, v] of Object.entries(assets)) {
-                                      const idx = Number(k);
-                                      if (v.status === "success" && v.url) {
-                                        urlBy[idx] = v.url;
-                                      }
-                                    }
-                                    const standaloneU = latestCoverUrl;
-                                    void runSingleAsset(
-                                      s.index,
-                                      s.visualDescription,
-                                      s.narration,
-                                      resolveReferenceForScene(
-                                        s.index,
-                                        urlBy,
-                                        assets,
-                                        standaloneU,
-                                      ),
-                                    );
-                                  }}
-                                >
-                                  按上一镜出图
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={row?.status === "running"}
-                                  title="不传封面或上一镜参考图，按本分镜与口播（及页顶系列/切片语境）出图；远景、对峙或视角跳变时可避免构图被参考帧黏住。"
-                                  className={storyboardOpSecondaryBtn}
-                                  onClick={() => {
-                                    void runSingleAsset(
-                                      s.index,
-                                      s.visualDescription,
-                                      s.narration,
-                                    );
-                                  }}
-                                >
-                                  按切片内容生成
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                disabled={row?.status === "running"}
-                                title="第 1 镜不传封面或上一镜参考，按本分镜画面与口播出图。"
-                                className={storyboardOpPrimaryBtn}
-                                onClick={() => {
-                                  const urlBy: Record<number, string> = {};
-                                  for (const [k, v] of Object.entries(assets)) {
-                                    const idx = Number(k);
-                                    if (v.status === "success" && v.url) {
-                                      urlBy[idx] = v.url;
-                                    }
-                                  }
-                                  const standaloneU = latestCoverUrl;
-                                  void runSingleAsset(
-                                    s.index,
-                                    s.visualDescription,
-                                    s.narration,
-                                    resolveReferenceForScene(
-                                      s.index,
-                                      urlBy,
-                                      assets,
-                                      standaloneU,
-                                    ),
-                                  );
-                                }}
-                              >
-                                按分镜出图
-                              </button>
-                            )}
-                            {s.index > 1 ? (
-                              <>
-                                <div className={storyboardOpDivider} />
-                                <button
-                                  type="button"
-                                  disabled={
-                                    !latestCoverUrl || row?.status === "running"
-                                  }
-                                  title={
-                                    latestCoverUrl ?
-                                      "以封面为参考强锁主角样貌；大场面或换视角可改用上方「按切片内容生成」（需档案支持参考图）"
-                                    : "请先在「步骤 2 · 生成封面图」成功生成封面图"
-                                  }
-                                  className={storyboardOpCoverRefBtn}
-                                  onClick={() => {
-                                    const u = latestCoverUrl;
-                                    if (!u) return;
-                                    void runSingleAsset(
-                                      s.index,
-                                      s.visualDescription,
-                                      s.narration,
-                                      {
-                                        referenceImageUrl: u,
-                                        referenceRole: "cover",
-                                      },
-                                    );
-                                  }}
-                                >
-                                  按封面重生
-                                </button>
-                              </>
-                            ) : null}
-                            <div className={storyboardOpDivider} />
-                            <button
-                              type="button"
-                              disabled={
-                                !s.narration.trim() ||
-                                !subject.trim() ||
-                                !volcTtsEffectiveVoiceType.trim() ||
-                                sceneTtsByIndex[s.index]?.status === "running" ||
-                                sceneTtsBatchBusy
-                              }
-                              title={
-                                !volcTtsEffectiveVoiceType.trim() ?
-                                  "请先在整稿口播区上方选择豆包音色"
-                                : "读本镜旁白，火山豆包 TTS 合成并写入 slice-exports（fileStem：…-scene-audio-镜号）"
-                              }
-                              className={storyboardOpTtsBtn}
-                              onClick={() =>
-                                void runSceneTtsSave(s.index, s.narration)
-                              }
-                            >
-                              {sceneTtsByIndex[s.index]?.status === "running"
-                                ? "合成中…"
-                                : "生成语音"}
-                            </button>
-                            <div className={storyboardOpDivider} />
-                            <button
-                              type="button"
-                              disabled={
-                                seedancePromptBusy ||
-                                seedanceSingleBusyIndex !== null ||
-                                loading ||
-                                batchBusy ||
-                                sceneTtsBatchBusy ||
-                                !subject.trim() ||
-                                !s.visualDescription.trim()
-                              }
-                              title="仅本镜：根据 visualDescription 生成 Seedance 图生视频文案"
-                              className={storyboardOpSecondaryBtn}
-                              onClick={() =>
-                                void runSingleSeedancePrompt(s.index)
-                              }
-                            >
-                              {seedanceSingleBusyIndex === s.index ?
-                                "Seedance…"
-                              : "Seedance 文案"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-                </div>
-              </div>
-              {seedancePromptError ? (
-                <p className="mt-3 text-sm leading-relaxed text-rose-300/95">
-                  {seedancePromptError}
-                </p>
-              ) : null}
-              {Object.keys(seedancePromptByIndex).length > 0 ? (
-                <div className="mt-4 rounded-xl border border-violet-900/40 bg-violet-950/[0.12] p-4 ring-1 ring-violet-900/25 sm:p-5">
-                  <p className={sectionLabelClass}>Seedance 图生视频文案</p>
-                  <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-                    基于 L3 各镜 visualDescription，对照「主体→动作→环境→镜头→风格→约束」输出分析与可直接粘贴的优化提示词；请以<strong className="text-zinc-400">本镜静帧</strong>
-                    为参考图接入 Seedance。
-                  </p>
-                  <div className="mt-3 max-h-[min(70vh,28rem)] space-y-2 overflow-y-auto pr-1">
-                    {result.scenes.map((s) => {
-                      const sd = seedancePromptByIndex[s.index];
-                      if (!sd) return null;
-                      return (
-                        <details
-                          key={`seedance-${s.index}`}
-                          className="group rounded-lg border border-zinc-800/65 bg-zinc-950/45 open:bg-zinc-950/55"
-                        >
-                          <summary className="cursor-pointer list-none px-3 py-2.5 text-sm font-semibold text-violet-100/95 marker:content-none [&::-webkit-details-marker]:hidden">
-                            <span className="inline-flex items-center gap-2">
-                              <span className="tabular-nums">第 {s.index} 镜</span>
-                              <span className="text-[11px] font-normal text-zinc-500">
-                                · Seedance / 图生视频
-                              </span>
-                            </span>
-                          </summary>
-                          <div className="space-y-3 border-t border-zinc-800/55 px-3 py-3 text-[12px] leading-relaxed text-zinc-300">
-                            <div>
-                              <p className="font-semibold text-zinc-400">
-                                图生视频适配度
-                              </p>
-                              <p className="mt-1 whitespace-pre-wrap">
-                                {sd.adaptationFit}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="font-semibold text-zinc-400">
-                                Seedance 风格与模板要点
-                              </p>
-                              <p className="mt-1 whitespace-pre-wrap">
-                                {sd.officialTemplateNotes}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="font-semibold text-zinc-400">
-                                必要添加项与优化建议
-                              </p>
-                              <p className="mt-1 whitespace-pre-wrap">
-                                {sd.suggestions}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="font-semibold text-amber-200/80">
-                                优化参考版本（可粘贴）
-                              </p>
-                              <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg border border-zinc-800/80 bg-zinc-950/80 p-3 font-mono text-[11px] text-zinc-200">
-                                {sd.optimizedPrompt}
-                              </pre>
-                            </div>
-                          </div>
-                        </details>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
+              <StoryboardSceneAccordionList
+                scenes={result.scenes}
+                assets={assets}
+                sceneTtsByIndex={sceneTtsByIndex}
+                sceneKeyframeUiByScene={sceneKeyframeUiByScene}
+                sceneExpandedByScene={sceneExpandedByScene}
+                onSceneExpandedChange={setSceneExpandedByScene}
+                latestCoverUrl={latestCoverUrl}
+                subject={subject}
+                profileId={profileId}
+                imageProfileId={imageProfileId}
+                volcTtsEffectiveVoiceType={volcTtsEffectiveVoiceType}
+                loading={loading}
+                sceneTtsBatchBusy={sceneTtsBatchBusy}
+                resolveReferenceForScene={resolveReferenceForScene}
+                onRunSingleAsset={(sceneIndex, visual, narration, ref) => {
+                  void runSingleAsset(sceneIndex, visual, narration, ref);
+                }}
+                onRunSceneTts={(sceneIndex, narration) => {
+                  void runSceneTtsSave(sceneIndex, narration);
+                }}
+                onRunPlanSceneKeyframes={(sceneIndex, force) => {
+                  void runPlanSceneKeyframes(sceneIndex, force);
+                }}
+                onBatchGenerateSceneStills={(sceneIndex) => {
+                  void runSceneKeyframeOneClick(sceneIndex);
+                }}
+                onRunSceneKeyframeFillMissing={(sceneIndex) => {
+                  void runSceneKeyframeFillMissing(sceneIndex);
+                }}
+                onRunSingleKeyframeAsset={(
+                  sceneIndex,
+                  keyframeIndex,
+                  visual,
+                  referenceImageUrl,
+                ) => {
+                  void runSingleKeyframeAsset(
+                    sceneIndex,
+                    keyframeIndex,
+                    visual,
+                    referenceImageUrl,
+                  );
+                }}
+                onSetSceneKeyframeUi={setSceneKeyframeUiByScene}
+                onError={setError}
+              />
             </div>
           </section>
           ) : null}

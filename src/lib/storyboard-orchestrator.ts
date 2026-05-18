@@ -25,35 +25,29 @@ import {
   normalizeStoryboardRaw,
   type RawStoryboardGeneration,
 } from "@/lib/storyboard-normalize";
+import {
+  buildSpineSnapshotFromParsed,
+  parseAndNormalizeSpine,
+  spineSnapshotToParseInput,
+  type ParsedSpine,
+} from "@/lib/storyboard-spine";
 import type {
   GenerationResult,
   LlmDebugPhase,
   LlmMessagesDebug,
+  ReviewChecklist,
+  StoryArc,
   StoryboardSpineSnapshot,
-  TimelineBeat,
   VideoDurationMin,
 } from "@/lib/types";
 import {
   getVideoDurationPreset,
   targetSceneCountForPreset,
-  TIMELINE_SEGMENTS_HARD_MAX,
 } from "@/lib/video-duration";
 import { normalizeVoiceoverPayload } from "@/lib/voiceover-normalize";
 
 export type GenerateStoryboardLlmParams = StoryboardPromptParams & {
   profileId?: string | null;
-};
-
-type SpineRaw = {
-  hook?: string;
-  timeline?: RawStoryboardGeneration["timeline"];
-  sceneSkeleton?: Array<{
-    index?: number;
-    beat?: string;
-    durationSec?: number;
-  }>;
-  factNotes?: string[];
-  complianceNote?: string | null;
 };
 
 function parseJsonStrict(content: string): unknown {
@@ -75,16 +69,6 @@ function tryJsonParse(content: string):
       message: e instanceof Error ? e.message : String(e),
     };
   }
-}
-
-function spineParsedFromSnapshot(snap: StoryboardSpineSnapshot): unknown {
-  return {
-    hook: snap.hook,
-    timeline: snap.timeline,
-    sceneSkeleton: snap.sceneSkeleton,
-    factNotes: snap.factNotes,
-    complianceNote: snap.complianceNote ?? null,
-  };
 }
 
 /** 客户端按稿重跑：从口播全文或段落数组得到与镜数对齐的段落 */
@@ -120,74 +104,6 @@ export function resolveVoiceoverParagraphsFromClient(args: {
     );
   }
   return { voiceoverFullText: text, voiceoverParagraphs: parts };
-}
-
-function timelineFromSpine(spine: SpineRaw): TimelineBeat[] {
-  return (
-    spine.timeline?.map((t) => ({
-      label: t.label,
-      text: String(t.text ?? "").trim(),
-      sources: (t.sources ?? []).map(String).filter(Boolean),
-    })) ?? []
-  );
-}
-
-function parseAndValidateSpine(args: {
-  parsed: unknown;
-  expectedSkeletonCount: number;
-  dur: ReturnType<typeof getVideoDurationPreset>;
-}): { spine: SpineRaw; skeleton: SceneSkeletonRow[]; hook: string } {
-  const o = args.parsed as SpineRaw;
-  const hook = String(o.hook ?? "").trim();
-  if (!hook) {
-    throw new Error("叙事骨架阶段：hook 不得为空。");
-  }
-
-  const tl = timelineFromSpine(o);
-  if (tl.length < args.dur.timelineMin) {
-    throw new Error(
-      `叙事骨架阶段：timeline 段数为 ${tl.length}，须至少 ${args.dur.timelineMin} 段。`,
-    );
-  }
-  if (tl.length > TIMELINE_SEGMENTS_HARD_MAX) {
-    throw new Error(
-      `叙事骨架阶段：timeline 段数为 ${tl.length}，不得超过 ${TIMELINE_SEGMENTS_HARD_MAX} 段。`,
-    );
-  }
-  for (const row of tl) {
-    if (!row.text) throw new Error("叙事骨架阶段：timeline 每段 text 不得为空。");
-    if (!row.sources?.length) {
-      throw new Error("叙事骨架阶段：timeline 每段须至少 1 条 sources。");
-    }
-  }
-
-  const skRaw = o.sceneSkeleton ?? [];
-  const skeleton: SceneSkeletonRow[] = skRaw.map((r, i) => ({
-    index: typeof r.index === "number" ? r.index : i + 1,
-    beat: String(r.beat ?? "").trim(),
-    durationSec: Math.min(
-      60,
-      Math.max(2, Number(r.durationSec ?? args.dur.perSceneCenterSec)),
-    ),
-  }));
-
-  if (skeleton.length !== args.expectedSkeletonCount) {
-    throw new Error(
-      `叙事骨架阶段：sceneSkeleton 条数为 ${skeleton.length}，必须为 ${args.expectedSkeletonCount}。`,
-    );
-  }
-  for (let i = 0; i < skeleton.length; i++) {
-    if (skeleton[i].index !== i + 1) {
-      throw new Error(
-        `叙事骨架阶段：sceneSkeleton index 须自 1 连续递增，期望 ${i + 1}，实际 ${skeleton[i].index}。`,
-      );
-    }
-    if (!skeleton[i].beat) {
-      throw new Error(`叙事骨架阶段：第 ${i + 1} 条 beat 不得为空。`);
-    }
-  }
-
-  return { spine: o, skeleton, hook };
 }
 
 function parseAndValidateVoiceover(
@@ -296,9 +212,8 @@ async function runExpandChunks(args: {
   chunkMode: StoryboardChunkMode;
   videoDurationMin: VideoDurationMin;
   targetScenes: number;
-  hook: string;
-  timeline: TimelineBeat[];
-  factNotes: string[];
+  storyArc: StoryArc;
+  reviewChecklist: ReviewChecklist;
   skeleton: SceneSkeletonRow[];
   voiceoverParagraphs: string[];
   phases: LlmDebugPhase[];
@@ -312,9 +227,8 @@ async function runExpandChunks(args: {
     chunkMode,
     videoDurationMin,
     targetScenes,
-    hook,
-    timeline,
-    factNotes,
+    storyArc,
+    reviewChecklist,
     skeleton,
     voiceoverParagraphs,
     phases,
@@ -358,12 +272,10 @@ async function runExpandChunks(args: {
 
     const chunkUser = buildChunkUserPrompt({
       params: fullParams,
-      d: dur,
       chunkStart: start,
       chunkEnd: end,
-      hook,
-      timeline,
-      factNotes,
+      storyArc,
+      reviewChecklist,
       skeletonRows: skSlice,
       lockedParagraphs,
       previousLastNarration,
@@ -440,6 +352,8 @@ async function executeVoiceoverPhase(config: {
   videoDurationMin: VideoDurationMin;
   targetScenes: number;
   skeleton: SceneSkeletonRow[];
+  storyArc: StoryArc;
+  reviewChecklist: ReviewChecklist;
   phases: LlmDebugPhase[];
 }): Promise<{ voiceoverFullText: string; voiceoverParagraphs: string[] }> {
   const {
@@ -450,6 +364,8 @@ async function executeVoiceoverPhase(config: {
     videoDurationMin,
     targetScenes,
     skeleton,
+    storyArc,
+    reviewChecklist,
     phases,
   } = config;
 
@@ -461,7 +377,13 @@ async function executeVoiceoverPhase(config: {
     .join("\n");
   const voSystem = buildVoiceoverSystemPrompt(videoDurationMin, targetScenes);
   const voMax = resolveSingleShotMaxTokens({ videoDurationMin, profile });
-  let voUser = buildVoiceoverUserPrompt(fullParams, targetScenes, skTable);
+  let voUser = buildVoiceoverUserPrompt(
+    fullParams,
+    targetScenes,
+    skTable,
+    storyArc,
+    reviewChecklist,
+  );
   let voAssistant = await callChat({
     profile,
     apiKey,
@@ -518,12 +440,16 @@ async function executeVoiceoverPhase(config: {
   }
 }
 
+function spineRetryHint(
+  dur: ReturnType<typeof getVideoDurationPreset>,
+  targetScenes: number,
+): string {
+  const milestoneMin = Math.max(2, dur.timelineMin - 1);
+  return `sceneSkeleton 恰好 ${targetScenes} 条；storyArc.milestones 至少 ${milestoneMin} 条；peak.label 含高峰关键词；opening 为≤48字单句钩子（悬念或反差），勿照搬唯一切面正文、勿「我回答/我说」剧透 peak。`;
+}
+
 /**
- * 分层主生成：叙事骨架（L1）→ 整稿口播（L2）→ 分镜扩写（L3）。
- * - stopAfterSpine：仅 L1，pipelinePending=voiceover
- * - generateVoiceoverOnly + spineSnapshot：仅 L2，pipelinePending=scenes
- * - spineSnapshot + 口播 override：仅 L3
- * - stopAfterVoiceover：L1+L2，pipelinePending=scenes
+ * 分层主生成：叙事方案 L1 → 整稿口播 L2 → 分镜扩写 L3。
  */
 export async function generateStoryboardWithProfile(args: {
   profile: LlmProfileRow;
@@ -534,12 +460,8 @@ export async function generateStoryboardWithProfile(args: {
   spineSnapshot?: StoryboardSpineSnapshot | null;
   voiceoverFullTextOverride?: string | null;
   voiceoverParagraphsOverride?: string[] | null;
-  stopAfterVoiceover?: boolean;
-  /** 仅 L1 */
   stopAfterSpine?: boolean;
-  /** 仅 L2（须带 spineSnapshot） */
   generateVoiceoverOnly?: boolean;
-  /** 与 API 响应头 `x-request-id` 一致，失败时写入 `.llm-read.md` 便于对照 */
   llmRequestId?: string;
 }): Promise<{ result: GenerationResult; promptDebug: LlmMessagesDebug }> {
   const {
@@ -550,7 +472,6 @@ export async function generateStoryboardWithProfile(args: {
     spineSnapshot,
     voiceoverFullTextOverride,
     voiceoverParagraphsOverride,
-    stopAfterVoiceover,
     stopAfterSpine,
     generateVoiceoverOnly,
     llmRequestId,
@@ -577,52 +498,30 @@ export async function generateStoryboardWithProfile(args: {
   const stopAfterSpineOnly =
     Boolean(stopAfterSpine) && !regenerateOnly && !voiceoverOnly;
 
-  const stopAfterVoiceoverBundle =
-    Boolean(stopAfterVoiceover) &&
-    !regenerateOnly &&
-    !voiceoverOnly &&
-    !stopAfterSpineOnly;
-
-  if (stopAfterSpineOnly && stopAfterVoiceover) {
-    throw new Error("不要同时传 stopAfterSpine 与 stopAfterVoiceover。");
-  }
   if (
     regenerateOnly &&
-    (stopAfterVoiceover || stopAfterSpineOnly || Boolean(generateVoiceoverOnly))
+    (stopAfterSpineOnly || Boolean(generateVoiceoverOnly))
   ) {
     throw new Error(
-      "仅扩写分镜时不要同时传 stopAfterSpine / stopAfterVoiceover / generateVoiceoverOnly。",
+      "仅扩写分镜时不要同时传 stopAfterSpine / generateVoiceoverOnly。",
     );
   }
   if (voiceoverOnly && !spineSnapshot) {
     throw new Error("仅生成整稿口播须提供 spineSnapshot。");
   }
 
-  let hook: string;
-  let timeline: TimelineBeat[];
-  let skeleton: SceneSkeletonRow[];
-  let factNotes: string[];
-  let complianceNote: string | undefined;
+  let parsedSpine: ParsedSpine;
   let voiceoverFullText: string;
   let voiceoverParagraphs: string[];
   let skipL3: boolean;
   let pipelinePending: "voiceover" | "scenes" | undefined;
 
   if (regenerateOnly) {
-    const validated = parseAndValidateSpine({
-      parsed: spineParsedFromSnapshot(spineSnapshot),
+    parsedSpine = parseAndNormalizeSpine({
+      parsed: spineSnapshotToParseInput(spineSnapshot!),
       expectedSkeletonCount: targetScenes,
       dur,
     });
-    hook = validated.hook;
-    skeleton = validated.skeleton;
-    timeline = timelineFromSpine(validated.spine);
-    factNotes = (validated.spine.factNotes ?? []).map(String);
-    complianceNote =
-      validated.spine.complianceNote === null ||
-      validated.spine.complianceNote === undefined ?
-        undefined
-      : String(validated.spine.complianceNote);
     const vo = resolveVoiceoverParagraphsFromClient({
       overrideText: voiceoverFullTextOverride,
       paragraphsOverride: voiceoverParagraphsOverride ?? null,
@@ -633,20 +532,11 @@ export async function generateStoryboardWithProfile(args: {
     skipL3 = false;
     pipelinePending = undefined;
   } else if (voiceoverOnly) {
-    const validated = parseAndValidateSpine({
-      parsed: spineParsedFromSnapshot(spineSnapshot!),
+    parsedSpine = parseAndNormalizeSpine({
+      parsed: spineSnapshotToParseInput(spineSnapshot!),
       expectedSkeletonCount: targetScenes,
       dur,
     });
-    const spine = validated.spine;
-    skeleton = validated.skeleton;
-    hook = validated.hook;
-    timeline = timelineFromSpine(spine);
-    factNotes = (spine.factNotes ?? []).map(String);
-    complianceNote =
-      spine.complianceNote === null || spine.complianceNote === undefined ?
-        undefined
-      : String(spine.complianceNote);
     const vo = await executeVoiceoverPhase({
       profile,
       apiKey,
@@ -654,7 +544,9 @@ export async function generateStoryboardWithProfile(args: {
       fullParams,
       videoDurationMin,
       targetScenes,
-      skeleton,
+      skeleton: parsedSpine.sceneSkeleton,
+      storyArc: parsedSpine.storyArc,
+      reviewChecklist: parsedSpine.reviewChecklist,
       phases,
     });
     voiceoverFullText = vo.voiceoverFullText;
@@ -720,7 +612,7 @@ export async function generateStoryboardWithProfile(args: {
       await logSpineL1Failure({
         user: spineUser,
         assistantRaw: spineAssistant,
-        storyboardStrategy: "narrative_skeleton · L1 · JSON.parse failed (首轮)",
+        storyboardStrategy: "narrative_plan · L1 · JSON.parse failed (首轮)",
         meta: {
           spineFailureStage: "json_parse",
           jsonParseError: j1.message,
@@ -729,9 +621,9 @@ export async function generateStoryboardWithProfile(args: {
       throw new Error("模型输出不是合法 JSON，请重试");
     }
     let spineParsed: unknown = j1.value;
-    let validated: ReturnType<typeof parseAndValidateSpine>;
+    let validated: ParsedSpine;
     try {
-      validated = parseAndValidateSpine({
+      validated = parseAndNormalizeSpine({
         parsed: spineParsed,
         expectedSkeletonCount: targetScenes,
         dur,
@@ -739,7 +631,7 @@ export async function generateStoryboardWithProfile(args: {
     } catch (e1) {
       const msgFirst = e1 instanceof Error ? e1.message : String(e1);
       const assistantRound1 = spineAssistant;
-      spineUser = `${spineUser}\n\n【自动重试】上次校验失败：${msgFirst}\n请严格输出合法 JSON：sceneSkeleton 恰好 ${targetScenes} 条，index 1～${targetScenes}；timeline 至少 ${dur.timelineMin} 段、至多 ${TIMELINE_SEGMENTS_HARD_MAX} 段。`;
+      spineUser = `${spineUser}\n\n【自动重试】上次校验失败：${msgFirst}\n请严格输出合法 JSON：${spineRetryHint(dur, targetScenes)}`;
       spineAssistant = await callChat({
         profile,
         apiKey,
@@ -753,10 +645,10 @@ export async function generateStoryboardWithProfile(args: {
         await logSpineL1Failure({
           user: spineUser,
           assistantRaw:
-            `【首轮 assistant（JSON 合法但骨架未过校验）】\n${assistantRound1}\n\n` +
+            `【首轮 assistant（JSON 合法但方案未过校验）】\n${assistantRound1}\n\n` +
             `【次轮 assistant（非法 JSON）】\n${spineAssistant}`,
           storyboardStrategy:
-            "narrative_skeleton · L1 · JSON.parse failed (自动重试后)",
+            "narrative_plan · L1 · JSON.parse failed (自动重试后)",
           meta: {
             spineFailureStage: "json_parse",
             jsonParseError: j2.message,
@@ -767,7 +659,7 @@ export async function generateStoryboardWithProfile(args: {
       }
       spineParsed = j2.value;
       try {
-        validated = parseAndValidateSpine({
+        validated = parseAndNormalizeSpine({
           parsed: spineParsed,
           expectedSkeletonCount: targetScenes,
           dur,
@@ -779,7 +671,7 @@ export async function generateStoryboardWithProfile(args: {
           assistantRaw:
             `【首轮】\n${assistantRound1}\n\n【次轮】\n${spineAssistant}`,
           storyboardStrategy:
-            "narrative_skeleton · L1 · validate failed (首轮与自动重试后均未通过)",
+            "narrative_plan · L1 · validate failed (首轮与自动重试后均未通过)",
           meta: {
             spineFailureStage: "validate",
             firstValidateError: msgFirst,
@@ -802,15 +694,7 @@ export async function generateStoryboardWithProfile(args: {
       assistantRaw: spineAssistant,
     });
 
-    const spine = validated.spine;
-    skeleton = validated.skeleton;
-    hook = validated.hook;
-    timeline = timelineFromSpine(spine);
-    factNotes = (spine.factNotes ?? []).map(String);
-    complianceNote =
-      spine.complianceNote === null || spine.complianceNote === undefined ?
-        undefined
-      : String(spine.complianceNote);
+    parsedSpine = validated;
 
     if (stopAfterSpineOnly) {
       voiceoverFullText = "";
@@ -825,18 +709,15 @@ export async function generateStoryboardWithProfile(args: {
         fullParams,
         videoDurationMin,
         targetScenes,
-        skeleton,
+        skeleton: parsedSpine.sceneSkeleton,
+        storyArc: parsedSpine.storyArc,
+        reviewChecklist: parsedSpine.reviewChecklist,
         phases,
       });
       voiceoverFullText = vo.voiceoverFullText;
       voiceoverParagraphs = vo.voiceoverParagraphs;
-      if (stopAfterVoiceoverBundle) {
-        skipL3 = true;
-        pipelinePending = "scenes";
-      } else {
-        skipL3 = false;
-        pipelinePending = undefined;
-      }
+      skipL3 = false;
+      pipelinePending = undefined;
     }
   }
 
@@ -851,28 +732,21 @@ export async function generateStoryboardWithProfile(args: {
       chunkMode,
       videoDurationMin,
       targetScenes,
-      hook,
-      timeline,
-      factNotes,
-      skeleton,
+      storyArc: parsedSpine.storyArc,
+      reviewChecklist: parsedSpine.reviewChecklist,
+      skeleton: parsedSpine.sceneSkeleton,
       voiceoverParagraphs,
       phases,
     });
   }
 
   const rawFinal: RawStoryboardGeneration = {
-    hook,
-    timeline: timeline.map((t) => ({
-      label: t.label,
-      text: t.text,
-      sources: t.sources,
-    })),
+    storyArc: parsedSpine.storyArc,
     scenes: mergedScenes,
-    factNotes,
-    complianceNote: complianceNote ?? null,
+    reviewChecklist: parsedSpine.reviewChecklist,
     voiceoverFullText,
     voiceoverParagraphs,
-    sceneSkeleton: skeleton,
+    sceneSkeleton: parsedSpine.sceneSkeleton,
     pipelinePending:
       mergedScenes.length > 0 ? undefined : pipelinePending,
   };
@@ -892,3 +766,5 @@ export async function generateStoryboardWithProfile(args: {
     }),
   };
 }
+
+export { buildSpineSnapshotFromParsed };
