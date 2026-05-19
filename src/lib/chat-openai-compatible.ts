@@ -13,12 +13,21 @@ type ChatCompletionChoice = {
   };
 };
 
+export type ParseChatCompletionOptions = {
+  /** 为 false 时不把 reasoning_content 当作正文（短文案等场景） */
+  allowReasoningFallback?: boolean;
+};
+
 /** 从 chat/completions JSON 提取 assistant 正文（兼容 string / 多段 content / reasoning_content） */
-export function parseChatCompletionResponse(data: unknown): {
+export function parseChatCompletionResponse(
+  data: unknown,
+  options?: ParseChatCompletionOptions,
+): {
   text: string;
   finishReason?: string;
   usedReasoningFallback: boolean;
 } {
+  const allowReasoningFallback = options?.allowReasoningFallback !== false;
   const choices = (data as { choices?: ChatCompletionChoice[] })?.choices;
   const choice = choices?.[0];
   const msg = choice?.message;
@@ -40,7 +49,11 @@ export function parseChatCompletionResponse(data: unknown): {
 
   let text = fromContent(msg?.content ?? null);
   let usedReasoningFallback = false;
-  if (!text && typeof msg?.reasoning_content === "string") {
+  if (
+    allowReasoningFallback &&
+    !text &&
+    typeof msg?.reasoning_content === "string"
+  ) {
     const rc = msg.reasoning_content.trim();
     if (rc) {
       text = rc;

@@ -17,9 +17,11 @@ type AssetsBody = {
   visualDescription: string;
   /** 独立外宣封面：须 sceneIndex=0；不依赖正片镜 1 的 visual */
   standaloneCover?: boolean;
+  /** 独立人脸定稿：须 sceneIndex=0；正脸头肩锚点 */
+  standaloneFace?: boolean;
   seriesTitle?: string | null;
-  sliceTitle?: string | null;
-  sliceAngle?: string | null;
+  peakTitle?: string | null;
+  peakDescription?: string | null;
   narration?: string | null;
   stylePreset?: StylePreset;
   projectSeed?: string;
@@ -29,7 +31,7 @@ type AssetsBody = {
   /** 独立封面：人物形象描述（与画风一并约束） */
   subjectAppearance?: string | null;
   referenceImageUrl?: string | null;
-  referenceRole?: "previous" | "cover" | null;
+  referenceRole?: "previous" | "cover" | "face" | null;
   /** 同镜多关键帧：1 为主静图（默认），≥2 时须 sceneIndex≥1 且非独立封面 */
   keyframeIndex?: number;
 };
@@ -57,23 +59,32 @@ export async function POST(req: Request) {
   }
 
   try {
-    if (body.standaloneCover) {
+    const standalonePortrait =
+      Boolean(body.standaloneCover) || Boolean(body.standaloneFace);
+    if (body.standaloneCover && body.standaloneFace) {
+      return NextResponse.json(
+        { error: "standaloneCover 与 standaloneFace 不可同时为 true" },
+        { status: 400, headers: jsonHeaders },
+      );
+    }
+    if (standalonePortrait) {
       if (body.sceneIndex !== 0) {
         await appendLlmDebugLog({
           requestId,
           route: "POST /api/assets",
           meta: {
             phase: "validation",
-            standaloneCover: true,
+            standaloneCover: body.standaloneCover,
+            standaloneFace: body.standaloneFace,
             sceneIndex: body.sceneIndex,
           },
           promptDebug: buildImageGenerationPromptDebug({
             promptSummary: body.visualDescription,
-            error: "独立封面须 sceneIndex 为 0",
+            error: "独立封面/人脸定稿须 sceneIndex 为 0",
           }),
         });
         return NextResponse.json(
-          { error: "独立封面须 sceneIndex 为 0" },
+          { error: "独立封面/人脸定稿须 sceneIndex 为 0" },
           { status: 400, headers: jsonHeaders },
         );
       }
@@ -84,11 +95,11 @@ export async function POST(req: Request) {
         meta: { phase: "validation", sceneIndex: 0 },
         promptDebug: buildImageGenerationPromptDebug({
           promptSummary: body.visualDescription,
-          error: "sceneIndex 0 仅用于独立封面（standaloneCover: true）",
+          error: "sceneIndex 0 仅用于独立封面或人脸定稿",
         }),
       });
       return NextResponse.json(
-        { error: "sceneIndex 0 仅用于独立封面（standaloneCover: true）" },
+        { error: "sceneIndex 0 仅用于独立封面（standaloneCover）或人脸定稿（standaloneFace）" },
         { status: 400, headers: jsonHeaders },
       );
     } else if (!body.visualDescription?.trim()) {
@@ -107,7 +118,7 @@ export async function POST(req: Request) {
     }
 
     let keyframeIndex = 1;
-    if (!body.standaloneCover) {
+    if (!standalonePortrait) {
       const ki =
         body.keyframeIndex === undefined || body.keyframeIndex === null ?
           1
@@ -153,9 +164,10 @@ export async function POST(req: Request) {
       sceneIndex: body.sceneIndex,
       visualDescription: body.visualDescription,
       standaloneCover: Boolean(body.standaloneCover),
+      standaloneFace: Boolean(body.standaloneFace),
       seriesTitle: body.seriesTitle?.trim() || undefined,
-      sliceTitle: body.sliceTitle?.trim() || undefined,
-      sliceAngle: body.sliceAngle?.trim() || undefined,
+      peakTitle: body.peakTitle?.trim() || undefined,
+      peakDescription: body.peakDescription?.trim() || undefined,
       narration: body.narration?.trim() || undefined,
       stylePreset,
       projectSeed: seed,
@@ -177,6 +189,7 @@ export async function POST(req: Request) {
         sceneIndex: body.sceneIndex,
         keyframeIndex,
         standaloneCover: Boolean(body.standaloneCover),
+        standaloneFace: Boolean(body.standaloneFace),
         profileId: out.profileId,
         provider: out.provider,
         coherence: out.coherence,
@@ -184,7 +197,7 @@ export async function POST(req: Request) {
         stylePreset,
         subjectPresent: Boolean(body.subject?.trim()),
         subjectAppearancePresent: Boolean(body.subjectAppearance?.trim()),
-        sliceAnglePresent: Boolean(body.sliceAngle?.trim()),
+        peakDescriptionPresent: Boolean(body.peakDescription?.trim()),
         narrationPresent: Boolean(body.narration?.trim()),
         dynastyPresent: Boolean(body.dynasty?.trim()),
         referenceRole: body.referenceRole ?? null,

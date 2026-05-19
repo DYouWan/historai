@@ -53,7 +53,7 @@ function fence(lang: "text" | "json", body: string): string {
   return "```" + lang + "\n" + body.trimEnd() + "\n```\n\n";
 }
 
-/** assistant 正文（不含 ### 标题），供根级与 merged 段复用 */
+/** assistant 正文（不含 ### 标题），供单轮根级段复用 */
 function assistantMarkdownBody(raw: string | undefined): string {
   if (!raw?.trim()) return "_(empty)_\n\n";
   const t = raw.trim();
@@ -107,7 +107,9 @@ function buildMarkdownBlock(args: {
   md += `**requestId:** \`${requestId}\`\n\n`;
   md += `**route:** \`${route}\`\n\n`;
   md += `- **model:** \`${pd.model}\` · temperature ${pd.temperature}`;
-  md += ` · JSON mode: ${pd.usesJsonResponseFormat ? "on" : "off"}\n`;
+  md += ` · JSON mode: ${pd.usesJsonResponseFormat ? "on" : "off"}`;
+  if (pd.thinkingDisabled) md += ` · thinking: off`;
+  md += `\n`;
   if (pd.storyboardStrategy) {
     md += `- **storyboard:** ${pd.storyboardStrategy}\n`;
   }
@@ -127,16 +129,6 @@ function buildMarkdownBlock(args: {
     md += "\n### 各轮明细（system / user / assistant）\n\n";
     for (let i = 0; i < n; i++) {
       md += sectionPhase(pd.phases[i]!, i + 1, n);
-    }
-    if (
-      pd.assistantRaw?.trim() &&
-      pd.phases.length > 1 &&
-      pd.phases.some((p) => p.assistantRaw)
-    ) {
-      md +=
-        "### 调试拼接：各轮 assistant 合并串\n\n" +
-        "_（仅供对照 UI / 解析逻辑；逐轮正文以上表为准。）_\n\n" +
-        assistantMarkdownBody(pd.assistantRaw);
     }
   } else {
     md +=

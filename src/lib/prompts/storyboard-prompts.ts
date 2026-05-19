@@ -20,23 +20,26 @@ import {
 
 export type StoryboardPromptParams = {
   seriesTitle?: string;
-  sliceTitle?: string;
-  sliceAngle?: string;
+  peakTitle?: string;
+  peakDescription?: string;
   subject: string;
   dynasty?: string;
   tone: Tone;
   videoDurationMin?: VideoDurationMin;
 };
 
-/** 写入 L1～L3 提示的切口正文：优先切片说明，无说明时退回标题 */
-export function formatUserSliceProposition(
-  params: Pick<StoryboardPromptParams, "sliceTitle" | "sliceAngle">,
+/** 写入 L1～L3 提示的峰值选题正文：优先峰值说明，无说明时退回峰值标题 */
+export function formatUserPeakTopicProposition(
+  params: Pick<StoryboardPromptParams, "peakTitle" | "peakDescription">,
 ): string | null {
-  const angle = params.sliceAngle?.trim();
-  if (angle) return angle;
-  const title = params.sliceTitle?.trim();
+  const description = params.peakDescription?.trim();
+  if (description) return description;
+  const title = params.peakTitle?.trim();
   return title || null;
 }
+
+/** @deprecated 使用 formatUserPeakTopicProposition */
+export const formatUserSliceProposition = formatUserPeakTopicProposition;
 
 /** 极简 stakes 须在 index 1～返回值（含）内首次说清楚 */
 export function stakeWindowEndInclusive(d: VideoDurationPreset): number {
@@ -60,13 +63,13 @@ function buildNarrativePlanningLead(
   const d = getVideoDurationPreset(params.videoDurationMin ?? 1);
   const toneText = buildToneText(params);
   const hasTheme = Boolean(params.seriesTitle?.trim());
-  const sliceProposition = formatUserSliceProposition(params);
+  const sliceProposition = formatUserPeakTopicProposition(params);
   const hasUserSlice = Boolean(sliceProposition);
 
   const themeBlock = hasTheme
     ? hasUserSlice
       ? `**人物向系列：**「${params.seriesTitle!.trim()}」\n须与本系列定位一致；同时存在下方「唯一切面」时，**${stage === "spine" ? "本方案" : "口播"}须优先落实该切面**，不得只写系列层面的泛泛介绍或人物小传。\n`
-      : `**人物向系列：**「${params.seriesTitle!.trim()}」\n${stage === "spine" ? "叙事方案" : "口播"}须紧扣本系列定位；若尚未给定唯一切面，请在 storyArc.opening 中点明本支视频唯一的具体切口。\n`
+      : `**人物向系列：**「${params.seriesTitle!.trim()}」\n${stage === "spine" ? "叙事方案" : "口播"}须紧扣本系列定位；若尚未给定唯一切面，请在首个 milestone 或 peak 中点明本支视频唯一的具体切口。\n`
     : "";
 
   const sliceBlock = hasUserSlice
@@ -75,7 +78,7 @@ function buildNarrativePlanningLead(
 
   const sliceRuleFallback =
     stage === "spine" && !hasTheme && !hasUserSlice
-      ? `未给定人物向系列且未给定唯一切面时：你必须**自拟一个清晰、单一的「切面命题」**（用一句话说清本视频只讲哪一个冲突、悖论或抉择），并在 storyArc.opening 或首个 milestone 中点明；禁止泛谈「一生」「生平」。\n`
+      ? `未给定人物向系列且未给定唯一切面时：你必须**自拟一个清晰、单一的「切面命题」**（用一句话说清本视频只讲哪一个冲突、悖论或抉择），并在首个 milestone 或 peak.intent 中点明；禁止泛谈「一生」「生平」。\n`
       : "";
 
   const durationBlock = `**叙事目标时长（须与界面选择一致）**：${d.labelShort}。镜数与总秒数须满足本档位硬约束。\n\n`;
@@ -116,13 +119,11 @@ export function buildSpineContextPrefix(
   params: StoryboardPromptParams,
 ): string {
   const { toneText, lead } = buildNarrativePlanningLead(params, "spine");
-  const sliceOpeningNote = formatUserSliceProposition(params)
-    ? `\n**opening 勿照搬唯一切面**：下方切面正文仅供理解命题；须**另写**一句悬念/反差钩子，不得把切面里的场景与对白原样贴进 storyArc.opening。\n`
-    : "";
-  return `${lead}${sliceOpeningNote}
+  return `${lead}
 **口吻：**${toneText}
 
-**场面侧重（写入 beat 即可）：**可点「主角反应 / 对峙压力 / 部属或人群 / 环境局势」之一；勿在此阶段写 visualDescription、完整口播或 scenes。
+**L1 只做叙事骨架**：storyArc（milestones + peak + closing）与 sceneSkeleton.beat；勿写完整口播或分镜画面字段。
+**场面侧重（写入 beat 即可）：**可点「主角反应 / 对峙压力 / 部属或人群 / 环境局势」之一；勿写 visualDescription、narration 或 scenes。
 `;
 }
 
@@ -161,15 +162,6 @@ export function buildVoiceoverProductAndRequirementsOnly(
 
 export type SceneSkeletonRow = SceneSkeletonEntry;
 
-/** L1 storyArc.opening 黄金一句：写入 system / user，与 storyboard-spine 校验一致 */
-export const OPENING_GOLDEN_LINE_PROMPT = `【opening · 黄金一句（硬约束）】
-- **仅 1 句**口语钩子（约 15～45 字为宜，**上限 48 字**含标点）；以。！？之一收束。
-- **功能**：制造**悬念**或**反差**，指向本片唯一切面；让观众想继续听，而不是开场就听懂全貌。
-- **禁止**：场记式多拍串联（地点 + 抬眼 + 某人问 + 我已答完）；**禁止**把用户「唯一切面」正文整段抄进 opening；**禁止**抢先写完 peak/closing 才揭示的结论。
-- **禁止**「他问我…，我回答/我说：……」式把遗言或核心论断**一次说透**；可用「不是贪财」等半截反问/反常点住，但「而是…」「输在…」「不懂退」等终极答案须**留给 peak**。
-- **推荐**（择一，勿照抄字面）：①悬念停住——「刘墉问我遗言时，我最后悔的竟然不是贪财。」②悖论反差——「我一辈子最会揣摩圣意，却死在『不会退』三个字上。」
-- opening 定**命题与钩子**；刑部现戏、闪回、对白展开写在 sceneSkeleton.beat 与 peak，勿与第 1 镜 beat 重复同一段完整戏。`;
-
 export function buildSpineSystemPrompt(
   videoDurationMin: VideoDurationMin,
   targetSceneCount: number,
@@ -184,12 +176,10 @@ export function buildSpineSystemPrompt(
 - **不写** visualDescription、narration、scenes。
 
 【storyArc（主交付之一）】
-- **opening**：黄金开场一句（个人「我」/ 群体「他们」）；须有趣、有钩子，遵守下方 opening 专条。
-${OPENING_GOLDEN_LINE_PROMPT}
 - **milestones**：至少 **${milestoneMin}** 条推进节点；每条 **intent** 约 1～2 句白话；可选 **sceneRange**、**label**、**sources**（全弧 sources 合计至少 2 条）。
-- **peak**：全片**唯一**高峰；**label** 须含「高潮」「顶点」「翻盘」「一搏」「定局」「一绝」或其同义语之一。
+- **peak**：全片**唯一**高峰；**label** 须含「高潮」「顶点」「翻盘」「一搏」「定局」「一绝」或其同义语之一；**intent** 写清顶峰戏剧瞬间。
 - **closing**：收束方向一句，须回扣 peak 命题（峰终）。
-- 前置 **${stakeEnd} 镜（含）** 内 beat 链须能看出极简 stakes。
+- 前置 **${stakeEnd} 镜（含）** 内 sceneSkeleton.beat 链须能看出极简 stakes。
 
 【sceneSkeleton（主交付之二）】
 - 恰好 **${targetSceneCount}** 条；**index**、**beat**（场记体要点 20～60 字，勿写完整口播）、**durationSec**。
@@ -198,7 +188,7 @@ ${OPENING_GOLDEN_LINE_PROMPT}
 - **factsToVerify**：最多 5 条；**publishCautions**：敏感口径一句或 null。
 
 【人称与语体】
-- opening、milestones、peak、closing、各 **beat** 均现代汉语白话；个人「我」、群体「他们」。`;
+- milestones、peak、closing、各 **beat** 均现代汉语白话；个人向策划可用「我」、群体用「他们」。`;
 }
 
 export function buildSpineUserPrompt(
@@ -212,7 +202,6 @@ export function buildSpineUserPrompt(
   const spineBody = `你必须只输出合法 JSON（不要 Markdown，不要代码围栏）。结构如下：
 {
   "storyArc": {
-    "opening": "黄金开场一句",
     "milestones": [
       { "label": "铺垫", "intent": "白话节点意图", "sceneRange": "1-2", "sources": ["《xx》或学者观点"] }
     ],
@@ -234,7 +223,6 @@ export function buildSpineUserPrompt(
 3. **beat** 为场记要点；前 **${stakeEnd}** 镜 beat 链须体现极简 stakes。
 4. **storyArc.milestones** 至少 **${milestoneMin} 条**；**peak.label** 须含高峰关键词；sources 合计至少 2 条。
 5. **禁止** scenes、visualDescription、narration。
-6. **storyArc.opening** 遵守 system 中的 opening 黄金一句专条。
 
 请开始：输出 JSON。`;
 
@@ -324,7 +312,7 @@ export function buildChunkUserPrompt(args: {
   const prev =
     args.previousLastNarration?.trim() ?
       `**上一块最后一镜口播（须自然承接）：**\n${args.previousLastNarration.trim()}\n`
-    : `**本块含全片首镜**：首条 narration 须与 storyArc.opening 不矛盾。\n`;
+    : `**本块含全片首镜**：首条 narration 须落实 index=1 的 beat 与 storyArc 前段里程碑意图，勿另起无关切面。\n`;
 
   const next =
     args.nextChunkFirstBeat?.trim() ?

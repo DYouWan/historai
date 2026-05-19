@@ -180,13 +180,6 @@ function buildPromptDebug(args: {
 }): LlmMessagesDebug {
   const { profile, phases, videoDurationMin } = args;
   const first = phases[0];
-  const assistantJoined = phases
-    .filter((p) => p.assistantRaw)
-    .map(
-      (p) =>
-        `=== ${p.phase} (max_tokens=${p.maxTokens ?? "—"}) ===\n${p.assistantRaw}`,
-    )
-    .join("\n\n");
   return {
     system: first?.system ?? "",
     user: first?.user ?? "",
@@ -194,7 +187,7 @@ function buildPromptDebug(args: {
     chatCompletionsUrl: profile.chatCompletionsUrl.trim(),
     temperature: 0.6,
     usesJsonResponseFormat: profile.supportsJsonObject !== false,
-    assistantRaw: assistantJoined || undefined,
+    assistantRaw: phases.length === 1 ? first?.assistantRaw : undefined,
     phases: phases.length > 1 ? phases : undefined,
     storyboardStrategy: formatStoryboardStrategyLabel({
       videoDurationMin,
@@ -445,7 +438,7 @@ function spineRetryHint(
   targetScenes: number,
 ): string {
   const milestoneMin = Math.max(2, dur.timelineMin - 1);
-  return `sceneSkeleton 恰好 ${targetScenes} 条；storyArc.milestones 至少 ${milestoneMin} 条；peak.label 含高峰关键词；opening 为≤48字单句钩子（悬念或反差），勿照搬唯一切面正文、勿「我回答/我说」剧透 peak。`;
+  return `sceneSkeleton 恰好 ${targetScenes} 条；storyArc 含 milestones、peak、closing；peak.label 含高峰关键词；beat 为场记要点非口播。`;
 }
 
 /**

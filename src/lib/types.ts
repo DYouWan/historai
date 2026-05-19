@@ -8,7 +8,7 @@ export type VideoDurationMin = 1 | 3 | 5 | 8 | 10 | 12 | 15;
 /** 流水线未完成阶段：仅有 L1 待整稿；已有整稿待 L3 */
 export type StoryboardPipelinePending = "voiceover" | "scenes";
 
-/** L1 故事弧：开场 + 里程碑 + 唯一高峰 + 收束 */
+/** L1 故事弧：里程碑 + 唯一高峰 + 收束 */
 export interface StoryArcMilestone {
   label?: string;
   intent: string;
@@ -17,7 +17,6 @@ export interface StoryArcMilestone {
 }
 
 export interface StoryArc {
-  opening: string;
   milestones: StoryArcMilestone[];
   peak: {
     label: string;
@@ -98,6 +97,8 @@ export interface LlmMessagesDebug {
   chatCompletionsUrl: string;
   temperature: number;
   usesJsonResponseFormat: boolean;
+  /** DeepSeek V4：请求体 thinking.type=disabled */
+  thinkingDisabled?: boolean;
   assistantRaw?: string;
   phases?: LlmDebugPhase[];
   storyboardStrategy?: string;
@@ -113,9 +114,9 @@ export interface AssetJob {
 
 export type StylePreset = "anime" | "anime_modern" | "cinematic";
 
-export interface SliceSuggestion {
-  title: string;
-  angle: string;
+export interface PeakTopicSuggestion {
+  peakTitle: string;
+  peakDescription: string;
 }
 
 export interface CharacterSuggestion {

@@ -6,7 +6,7 @@ import {
 import {
   LlmAssistError,
   LlmNotConfiguredError,
-  fetchThemeCharacters,
+  fetchCharacterAppearance,
 } from "@/lib/theme-assist-llm";
 import { NextResponse } from "next/server";
 
@@ -16,11 +16,13 @@ export async function POST(req: Request) {
   const requestId = createLlmRequestId();
   let profileId: string | undefined;
   let seriesTitle = "";
+  let characterName = "";
   try {
     const body = (await req.json()) as {
       profileId?: string;
       seriesTitle?: string;
-      excludeCharacters?: unknown;
+      characterName?: string;
+      dynasty?: string;
     };
     profileId = body.profileId;
     seriesTitle =
@@ -31,36 +33,40 @@ export async function POST(req: Request) {
         { status: 400, headers: llmRequestIdHeaders(requestId) },
       );
     }
+    characterName =
+      typeof body.characterName === "string" ? body.characterName.trim() : "";
+    if (!characterName) {
+      return NextResponse.json(
+        { error: "请填写或选择人物/对象" },
+        { status: 400, headers: llmRequestIdHeaders(requestId) },
+      );
+    }
 
-    const excludeNames = Array.isArray(body.excludeCharacters)
-      ? body.excludeCharacters
-          .map((x) => (typeof x === "string" ? x.trim() : ""))
-          .filter(Boolean)
-          .slice(0, 40)
-      : [];
+    const dynasty =
+      typeof body.dynasty === "string" ? body.dynasty.trim() : undefined;
 
-    const { characters, promptDebug } = await fetchThemeCharacters({
+    const { appearance, promptDebug } = await fetchCharacterAppearance({
       profileId: body.profileId,
       seriesTitle,
-      ...(excludeNames.length ? { excludeNames } : {}),
+      characterName,
+      dynasty,
     });
 
     await appendLlmDebugLog({
       requestId,
-      route: "POST /api/suggest-theme-characters",
+      route: "POST /api/suggest-character-appearance",
       promptDebug,
       meta: {
         profileId: body.profileId ?? null,
         seriesTitle,
-        characterCount: characters.length,
-        excludeCount: excludeNames.length,
-        pipeline: "character_roster_only",
-        phaseCount: promptDebug.phases?.length ?? 1,
+        characterName,
+        dynasty: dynasty ?? null,
+        pipeline: "character_appearance_single",
       },
     });
 
     return NextResponse.json(
-      { characters },
+      { appearance },
       { headers: llmRequestIdHeaders(requestId) },
     );
   } catch (e) {
@@ -70,15 +76,16 @@ export async function POST(req: Request) {
         { status: 400, headers: llmRequestIdHeaders(requestId) },
       );
     }
-    const message = e instanceof Error ? e.message : "推荐失败";
+    const message = e instanceof Error ? e.message : "生成失败";
     if (e instanceof LlmAssistError && e.promptDebug) {
       await appendLlmDebugLog({
         requestId,
-        route: "POST /api/suggest-theme-characters",
+        route: "POST /api/suggest-character-appearance",
         promptDebug: e.promptDebug,
         meta: {
           profileId: profileId ?? null,
           seriesTitle,
+          characterName,
           failed: true,
           error: message,
         },

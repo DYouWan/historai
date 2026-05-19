@@ -29,8 +29,8 @@ type ExportBody = {
   subject: string;
   dynasty?: string;
   seriesTitle?: string;
-  sliceTitle?: string;
-  sliceAngle?: string;
+  peakTitle?: string;
+  peakDescription?: string;
   stylePreset: StylePreset;
   videoDurationMin: VideoDurationMin;
   storyboardChunkMode?: StoryboardChunkMode | string;
@@ -149,8 +149,8 @@ export async function POST(req: Request) {
     subject,
     dynasty: String(body.dynasty ?? ""),
     seriesTitle: String(body.seriesTitle ?? ""),
-    sliceTitle: String(body.sliceTitle ?? ""),
-    sliceAngle: String(body.sliceAngle ?? ""),
+    peakTitle: String(body.peakTitle ?? ""),
+    peakDescription: String(body.peakDescription ?? ""),
     stylePreset: normalizeStylePreset(body.stylePreset),
     videoDurationMin: body.videoDurationMin ?? 1,
     storyboardChunkMode: body.storyboardChunkMode ?? "auto",

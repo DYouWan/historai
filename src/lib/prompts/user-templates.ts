@@ -2,13 +2,14 @@
  * User Templates - User Prompt 模板（动态参数部分）
  */
 
+import { peakTopicSeriesUserAddon } from "@/lib/prompts/peak-topic-recommend-prompts";
 import { themeAxisHintForSeries } from "@/lib/prompts/series-prompts";
 import type { VideoDurationMin } from "@/lib/types";
 import { VIDEO_DURATION_PRESETS } from "@/lib/video-duration";
 
 /**
- * 内置系列轴线单行：【本系列轴线】题眼：…（axisHint 已含「题眼：」前缀）
- * @param labelSuffix 紧挨「】」后的补充说明（② 形象阶段用），与题眼之间留一空格外显
+ * 内置系列轴线单行：【本系列轴线】+ axisHint 正文
+ * @param labelSuffix 紧挨「】」后的补充说明（② 形象阶段用），与轴线正文之间留一空格外显
  */
 function themeAxisUserLine(
   seriesTitle: string,
@@ -67,7 +68,7 @@ export function buildCharacterRosterUserPrompt(
 export type CharacterRosterRow = { name: string; dynasty: string };
 
 /**
- * 推荐人物 ② 批量形象 - User Prompt（规则见 CHAR_APPEARANCE_SYSTEM）
+ * 推荐人物 ② 批量形象 - User Prompt（产出规则见 CHAR_APPEARANCE_SYSTEM；此处仅系列气质 + 锁定名单）
  */
 export function buildCharacterAppearanceUserPrompt(
   seriesTitle: string,
@@ -77,14 +78,14 @@ export function buildCharacterAppearanceUserPrompt(
   const table = roster
     .map((r) => `- name：${r.name} · dynasty：${r.dynasty}`)
     .join("\n");
-  return `人物向系列名称：「${theme}」${characterAppearanceAxisBlock(theme)}
+  const axis = characterAppearanceAxisBlock(theme);
+  const head = axis ?
+    `人物向系列名称：「${theme}」${axis}`
+  : `人物向系列名称：「${theme}」`;
+  return `${head}
 ---
-下列人选已锁定（**不得修改 name**）。请为**每一位**写 **appearance**（25～58 字；眉/眼/须发/脸型至少一类；批内互不相同；禁套话与场面）。
-
 【锁定名单】
-${table}
-
-只输出 JSON：{"appearances":[{"name":"…","appearance":"…"}]}，条数须与名单一致，name 逐字一致。`;
+${table}`;
 }
 
 /** @deprecated 使用 buildCharacterRosterUserPrompt + buildCharacterAppearanceUserPrompt */
@@ -96,14 +97,14 @@ export function buildCharacterRecommendUserPrompt(
 }
 
 /**
- * 推荐切片标题 - User Prompt（系列名 + 对象 + 任务；规则见 SLICE_SYSTEM）
- * @param excludeTitles 上一轮已在界面展示过的 title，本次不得再输出相同字符串
- * @param videoDurationMin 成片目标时长档位；影响切口体量与 angle 粒度
+ * 推荐峰值选题 - User Prompt（系列名 + 对象 + 任务；规则见 PEAK_TOPIC_SYSTEM）
+ * @param excludePeakTitles 上一轮已在界面展示过的 peakTitle，本次不得再输出相同字符串
+ * @param videoDurationMin 成片目标时长档位；影响 peakDescription 粒度
  */
-export function buildSliceRecommendUserPrompt(
+export function buildPeakTopicRecommendUserPrompt(
   seriesTitle: string,
   characterName: string,
-  excludeTitles?: string[],
+  excludePeakTitles?: string[],
   videoDurationMin?: VideoDurationMin,
 ): string {
   const theme = seriesTitle.trim();
@@ -117,20 +118,24 @@ export function buildSliceRecommendUserPrompt(
   const durationBlock =
     preset ?
       `
-【成片叙事体量】用户选定成片目标 **${preset.labelShort}**（叙事体量约 **${preset.minScenes}～${preset.maxScenes} 镜**、总时长与单镜秒数随主流程该档位约束）：请让每条切口的 **angle 场面粒度与信息节奏** 与此体量相称；**title** 一律 **6～12 字短钩**（硬上限 14 字），勿写成百科目录或长问句。`
+【成片叙事体量】**${preset.labelShort}**（约 **${preset.minScenes}～${preset.maxScenes} 镜**）：**peakDescription** 场面粒度与此相称。`
     : "";
 
-  const head = `人物向系列名称：「${theme}」${axisBlock}
+  const seriesTitleAddon = peakTopicSeriesUserAddon(theme);
+
+  const head = `人物向系列名称：「${theme}」${axisBlock}${seriesTitleAddon}
 核心人物/对象：「${ch}」${durationBlock}
 ---
-请生成峰值切片方案（6～8 条，互不重复，单点高峰）。
-**title**：封面大字短钩（坦白刃/当场刀/反差刃/身份翻等），6～12 字、含「我」；切口须**「${ch}」专属名场面**，勿照抄 system 示范里的他人情节（勿批量「没爱过某帝/沉湖/一句话杀某臣」换名）。
-**angle**：1～3 句白话单场戏，承担场面与 stakes。
-输出前自检：停划、顺口、未套示例换皮。只输出 JSON：{"suggestions":[{"title":"…","angle":"…"}]}`;
+请生成峰值选题方案（6～8 条，互不重复，单点高峰）。
+
+**peakTitle**：简洁工作标题，扣系列轴线与「${ch}」专属名场面；勿传播钩、勿生平章节名。
+**peakDescription**：1～3 句白话单场戏，写清场面、对手与 stakes。
+
+只输出 JSON：{"suggestions":[{"peakTitle":"…","peakDescription":"…"}]}`;
 
   const cleaned = Array.from(
     new Set(
-      (excludeTitles ?? [])
+      (excludePeakTitles ?? [])
         .map((t) => String(t ?? "").trim())
         .filter(Boolean),
     ),
@@ -141,6 +146,9 @@ export function buildSliceRecommendUserPrompt(
   const bullets = cleaned.map((t) => `- ${t}`).join("\n");
   return `${head}
 
-【须排除】下列 title 不得出现在本次 suggestions 中（须全新切口）：
+【须排除】下列 peakTitle 不得出现在本次 suggestions 中（须全新切口）：
 ${bullets}`;
 }
+
+/** @deprecated 使用 buildPeakTopicRecommendUserPrompt */
+export const buildSliceRecommendUserPrompt = buildPeakTopicRecommendUserPrompt;

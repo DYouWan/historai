@@ -117,9 +117,8 @@ export async function planSceneKeyframesWithProfile(args: {
   subject: string;
   dynasty?: string;
   seriesTitle?: string;
-  sliceTitle?: string;
-  sliceAngle?: string;
-  opening?: string;
+  peakTitle?: string;
+  peakDescription?: string;
   /** 为 true 时在 user 中说明关键帧 1 已有成图，规划须兼容该首帧 */
   preserveFirstKeyframe?: boolean;
   llmRequestId?: string;
@@ -131,11 +130,8 @@ export async function planSceneKeyframesWithProfile(args: {
     `主角/叙事主体：${args.subject.trim()}`,
     args.dynasty?.trim() ? `时代背景：${args.dynasty.trim()}` : "",
     args.seriesTitle?.trim() ? `系列：${args.seriesTitle.trim()}` : "",
-    args.sliceTitle?.trim() ? `切片标题：${args.sliceTitle.trim()}` : "",
-    args.sliceAngle?.trim() ? `切片说明：${args.sliceAngle.trim()}` : "",
-    args.opening?.trim() ?
-      `开场 opening（人称与叙事口径须一致）：${args.opening.trim()}`
-    : "",
+    args.peakTitle?.trim() ? `峰值标题：${args.peakTitle.trim()}` : "",
+    args.peakDescription?.trim() ? `峰值说明：${args.peakDescription.trim()}` : "",
   ]
     .filter(Boolean)
     .join("\n");

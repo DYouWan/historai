@@ -10,6 +10,17 @@ import {
   IMAGE_TEXT_ONLY_FACE_HINT_ANIME_MODERN,
 } from "@/lib/prompts/cover-prompts-anime-modern";
 import {
+  buildPortraitFacePromptSnippetByStyle,
+  buildStandaloneFaceLead,
+  faceAppearanceFallbackForStyle,
+} from "@/lib/prompts/face-prompts";
+import { FACE_NO_TEXT_BLOCK } from "@/lib/prompts/face-prompts-shared";
+import {
+  FACE_STYLE_ANCHOR_ZH,
+  FACE_STYLE_SNIPPET,
+  faceStyleSnippetNoText,
+} from "@/lib/prompts/face-style-prompts";
+import {
   anchorSubjectLabelForImage,
   buildPortraitCoverPromptSnippet,
   buildDynastyLineBackground,
@@ -43,8 +54,8 @@ export function driverSupportsReferenceImage(
 }
 
 export type ImageCoherencePlan = {
-  sceneRole: "cover" | "follow";
-  referenceRole: "previous" | "cover" | null;
+  sceneRole: "cover" | "face" | "follow";
+  referenceRole: "previous" | "cover" | "face" | null;
   useReferenceImage: boolean;
   /** 已拼好的完整提示词（含画风英文片 + 中文约束 + 分镜） */
   fullPrompt: string;
@@ -60,14 +71,16 @@ export function planImageCoherencePrompt(args: {
   stylePreset: StylePreset;
   visualDescription: string;
   standaloneCover?: boolean;
+  /** 独立人脸定稿图：正脸头肩锚点，与封面外宣脱钩 */
+  standaloneFace?: boolean;
   seriesTitle?: string | null;
-  sliceTitle?: string | null;
-  sliceAngle?: string | null;
+  peakTitle?: string | null;
+  peakDescription?: string | null;
   narration?: string | null;
   subject?: string | null;
   dynasty?: string | null;
   referenceImageUrl?: string | null;
-  referenceRole?: "previous" | "cover" | null;
+  referenceRole?: "previous" | "cover" | "face" | null;
   /** 独立封面：人物形象描述（与画风预设一并约束出图） */
   subjectAppearance?: string | null;
   /** 同镜下一关键帧：允许在 sceneIndex===1 时仍使用参考图（前一关键帧） */
@@ -89,8 +102,39 @@ export function planImageCoherencePrompt(args: {
   const useReferenceImage = Boolean(
     args.referenceImageUrl?.trim() &&
       driverSupportsReferenceImage(args.driver) &&
-      (args.forceIntraShotReference === true || args.sceneIndex > 1),
+      (args.forceIntraShotReference === true ||
+        args.sceneIndex > 1 ||
+        args.referenceRole === "face"),
   );
+
+  if (args.standaloneFace) {
+    const appearanceRaw = args.subjectAppearance?.trim() ?? "";
+    const appearance = appearanceRaw || faceAppearanceFallbackForStyle(style);
+    const faceSnippet = buildPortraitFacePromptSnippetByStyle({
+      stylePreset: style,
+      subject: args.subject,
+      subjectAppearance: appearance,
+      dynasty: args.dynasty,
+    });
+    const faceAnchorZh = FACE_STYLE_ANCHOR_ZH[style];
+    const faceSnippetEn = FACE_STYLE_SNIPPET[style];
+    const fullPrompt = [
+      buildStandaloneFaceLead(),
+      FACE_NO_TEXT_BLOCK,
+      faceSnippet,
+      `【造型锚点】${faceAnchorZh}`,
+      `【画风】${faceStyleSnippetNoText(faceSnippetEn)}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    return {
+      sceneRole: "face",
+      referenceRole: null,
+      useReferenceImage: false,
+      fullPrompt,
+    };
+  }
 
   if (args.standaloneCover) {
     const appearanceRaw = args.subjectAppearance?.trim() ?? "";
@@ -131,6 +175,29 @@ export function planImageCoherencePrompt(args: {
   }
 
   if (args.sceneIndex === 1) {
+    if (useReferenceImage && args.referenceRole === "face") {
+      const fullPrompt = [
+        `【第 1 镜｜图生图·人脸定稿锚点】参考图为人脸定稿。${IMAGE_REF_FACE_HOLD_PREFIX}`,
+        IMAGE_REF_SCENE_ADJUST_SUFFIX,
+        IMAGE_REF_IDENTITY_ONLY_HINT,
+        `主角姓名/称谓：「${name}」。`,
+        dynasty ? buildDynastyLineBackground(dynasty) : "",
+        `【造型锚点】${anchorZh}`,
+        `【画风】${snippet}`,
+        narrLine,
+        IMAGE_SCENE_BOARD_LABEL,
+        sceneCastHint,
+        visual,
+      ].join(" ");
+
+      return {
+        sceneRole: "follow",
+        referenceRole: "face",
+        useReferenceImage: true,
+        fullPrompt,
+      };
+    }
+
     if (useReferenceImage && args.forceIntraShotReference) {
       const refLabel = "本镜上一关键帧";
       const fullPrompt = [
@@ -184,11 +251,13 @@ export function planImageCoherencePrompt(args: {
   }
 
   const refLabel =
-    args.referenceRole === "cover"
-      ? "封面定稿首帧"
-      : args.referenceRole === "previous"
-        ? "上一镜成片"
-        : "前序已定帧";
+    args.referenceRole === "face"
+      ? "人脸定稿"
+      : args.referenceRole === "cover"
+        ? "封面定稿首帧"
+        : args.referenceRole === "previous"
+          ? "上一镜成片"
+          : "前序已定帧";
 
   if (useReferenceImage) {
     const fullPrompt = [

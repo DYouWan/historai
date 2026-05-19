@@ -22,8 +22,8 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       profileId?: string;
       seriesTitle?: string;
-      sliceTitle?: string;
-      sliceAngle?: string;
+      peakTitle?: string;
+      peakDescription?: string;
       subject: string;
       dynasty?: string;
       subjectAppearance?: string;
@@ -66,8 +66,8 @@ export async function POST(req: Request) {
     const { result, promptDebug } = await generateWithTextLlm({
       profileId: body.profileId,
       seriesTitle,
-      sliceTitle: body.sliceTitle,
-      sliceAngle: body.sliceAngle,
+      peakTitle: body.peakTitle,
+      peakDescription: body.peakDescription,
       subject: body.subject.trim(),
       dynasty: body.dynasty?.trim(),
       subjectAppearance: body.subjectAppearance?.trim(),

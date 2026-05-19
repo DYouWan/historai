@@ -13,42 +13,6 @@ import {
 const PEAK_LABEL_KEYWORDS =
   /高潮|顶点|翻盘|一搏|定局|一绝|峰值|顶峰|高潮镜|翻盘镜/;
 
-/** 与 buildSpineSystemPrompt / OPENING_GOLDEN_LINE_PROMPT 一致 */
-export const OPENING_GOLDEN_MAX_CHARS = 48;
-
-const OPENING_FULL_ANSWER_PATTERN = /我(?:回答|说|答道)[：:]/;
-const OPENING_SPOILER_NOT_BUT = /不是[^。！？]{0,24}而是/;
-
-export function validateOpeningGoldenLine(opening: string): void {
-  const text = opening.trim();
-  if (!text) {
-    throw new Error("叙事方案：storyArc.opening 不得为空。");
-  }
-  if (text.length > OPENING_GOLDEN_MAX_CHARS) {
-    throw new Error(
-      `叙事方案：storyArc.opening 须为黄金一句（≤${OPENING_GOLDEN_MAX_CHARS} 字），当前 ${text.length} 字；勿写多场记串联。`,
-    );
-  }
-  if (!/[。！？]$/.test(text)) {
-    throw new Error("叙事方案：opening 须以。！？之一结尾的单句。");
-  }
-  if ((text.match(/，/g)?.length ?? 0) >= 3) {
-    throw new Error(
-      "叙事方案：opening 逗号过多，疑似场记串联；请压缩为一句悬念或反差钩子。",
-    );
-  }
-  if (OPENING_FULL_ANSWER_PATTERN.test(text)) {
-    throw new Error(
-      "叙事方案：opening 勿写「他问我…我回答/我说：…」式完整答完；须留悬念，结论留给 peak。",
-    );
-  }
-  if (OPENING_SPOILER_NOT_BUT.test(text)) {
-    throw new Error(
-      "叙事方案：opening 勿抢先揭示「不是…而是…」完整命题；后半结论留给 peak。",
-    );
-  }
-}
-
 export type ParsedSpine = {
   storyArc: StoryArc;
   sceneSkeleton: SceneSkeletonEntry[];
@@ -57,7 +21,6 @@ export type ParsedSpine = {
 
 type RawSpineInput = {
   storyArc?: {
-    opening?: string;
     milestones?: Array<{
       label?: string;
       intent?: string;
@@ -118,7 +81,6 @@ function reviewFromRaw(o: RawSpineInput): ReviewChecklist {
 function parseStoryArcFromRaw(o: RawSpineInput): StoryArc | null {
   const arc = o.storyArc;
   if (!arc) return null;
-  const opening = trim(arc.opening);
   const closing = trim(arc.closing);
   const milestones = (arc.milestones ?? []).map(normalizeMilestone);
   const peakRaw = arc.peak;
@@ -128,12 +90,11 @@ function parseStoryArcFromRaw(o: RawSpineInput): StoryArc | null {
     sceneRange: peakRaw?.sceneRange?.trim() || undefined,
     sources: (peakRaw?.sources ?? []).map(String).filter(Boolean),
   };
-  if (!opening || !peak.intent || !closing) return null;
-  return { opening, milestones, peak, closing };
+  if (!peak.intent || !closing) return null;
+  return { milestones, peak, closing };
 }
 
 function validateStoryArc(storyArc: StoryArc, dur: VideoDurationPreset): void {
-  validateOpeningGoldenLine(storyArc.opening);
   if (!storyArc.peak.intent) {
     throw new Error("叙事方案：storyArc.peak.intent 不得为空。");
   }
@@ -220,7 +181,7 @@ export function parseAndNormalizeSpine(args: {
   const storyArc = parseStoryArcFromRaw(o);
   if (!storyArc) {
     throw new Error(
-      "叙事方案：须提供完整 storyArc（opening、milestones、peak、closing）。",
+      "叙事方案：须提供完整 storyArc（milestones、peak、closing）。",
     );
   }
 

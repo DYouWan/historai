@@ -22,16 +22,33 @@ export function buildSliceExportFolderName(
 /** 封面静帧落盘 stem：系列名-主角名-画风-cover（不含叙事时长 1m 等） */
 export function buildCoverImageFileStem(params: {
   seriesTitle: string;
-  sliceTitle?: string;
+  peakTitle?: string;
   subject: string;
   stylePreset: string;
 }): string {
   const series =
     params.seriesTitle.trim() ||
-    params.sliceTitle?.trim() ||
+    params.peakTitle?.trim() ||
     "未命名系列";
   const hero = params.subject.trim() || "historai";
   const style = params.stylePreset.trim() || "anime";
   const raw = `${series}-${hero}-${style}-cover`.replace(/\s+/g, "-");
+  return sanitizeExportSegment(raw, 96);
+}
+
+/** 人脸定稿图落盘 stem：系列名-主角名-画风-face（重复生成时覆盖同 stem） */
+export function buildFaceImageFileStem(params: {
+  seriesTitle: string;
+  peakTitle?: string;
+  subject: string;
+  stylePreset: string;
+}): string {
+  const series =
+    params.seriesTitle.trim() ||
+    params.peakTitle?.trim() ||
+    "未命名系列";
+  const hero = params.subject.trim() || "historai";
+  const style = params.stylePreset.trim() || "anime";
+  const raw = `${series}-${hero}-${style}-face`.replace(/\s+/g, "-");
   return sanitizeExportSegment(raw, 96);
 }

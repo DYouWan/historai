@@ -6,22 +6,32 @@ import {
   resolveApiKeyForProfile,
   type LlmProfileRow,
 } from "@/lib/llm-profiles";
+
+function profileUsesDeepSeekThinking(profile: LlmProfileRow): boolean {
+  const v = profile.vendor.toLowerCase();
+  const url = profile.chatCompletionsUrl.toLowerCase();
+  return v.includes("deepseek") || url.includes("deepseek");
+}
 import {
   CHAR_APPEARANCE_SYSTEM,
   CHAR_ROSTER_SYSTEM,
-  SLICE_SYSTEM,
+  PEAK_TOPIC_SYSTEM,
 } from "@/lib/prompts/system-prompts";
+import {
+  buildPeakPromoCopyUserPrompt,
+  PEAK_PROMO_COPY_SYSTEM,
+} from "@/lib/prompts/peak-promo-copy-prompts";
 import {
   buildCharacterAppearanceUserPrompt,
   buildCharacterRosterUserPrompt,
-  buildSliceRecommendUserPrompt,
+  buildPeakTopicRecommendUserPrompt,
   type CharacterRosterRow,
 } from "@/lib/prompts/user-templates";
 import type {
   CharacterSuggestion,
   LlmDebugPhase,
   LlmMessagesDebug,
-  SliceSuggestion,
+  PeakTopicSuggestion,
   VideoDurationMin,
 } from "@/lib/types";
 
@@ -46,10 +56,6 @@ export class LlmAssistError extends Error {
 function promptDebugFromPhases(phases: LlmDebugPhase[]): LlmMessagesDebug | undefined {
   if (!phases.length) return undefined;
   const first = phases[0]!;
-  const assistantJoined = phases
-    .filter((p) => p.assistantRaw)
-    .map((p) => `=== ${p.phase} ===\n${p.assistantRaw}`)
-    .join("\n\n");
   return {
     system: first.system,
     user: first.user,
@@ -57,7 +63,7 @@ function promptDebugFromPhases(phases: LlmDebugPhase[]): LlmMessagesDebug | unde
     chatCompletionsUrl: first.chatCompletionsUrl,
     temperature: first.temperature,
     usesJsonResponseFormat: first.usesJsonResponseFormat,
-    assistantRaw: assistantJoined || undefined,
+    assistantRaw: phases.length === 1 ? first.assistantRaw : undefined,
     phases: phases.length > 1 ? phases : undefined,
   };
 }
@@ -69,8 +75,15 @@ async function chatCompletionText(params: {
   user: string;
   temperature: number;
   maxTokens?: number;
+  /** false：不传 response_format，用于只需纯文本一句的场景 */
+  responseFormatJson?: boolean;
+  /** DeepSeek V4：关闭默认 thinking，避免 CoT 占满 content */
+  disableThinking?: boolean;
 }): Promise<{ text: string; promptDebug: LlmMessagesDebug }> {
-  const preferJson = params.profile.supportsJsonObject !== false;
+  const preferJson =
+    params.responseFormatJson === false ? false
+    : params.responseFormatJson === true ? true
+    : params.profile.supportsJsonObject !== false;
 
   const callOnce = async (useJson: boolean): Promise<{
     text: string;
@@ -89,6 +102,12 @@ async function chatCompletionText(params: {
     if (useJson) {
       body.response_format = { type: "json_object" };
     }
+    const thinkingOff =
+      params.disableThinking === true &&
+      profileUsesDeepSeekThinking(params.profile);
+    if (thinkingOff) {
+      body.thinking = { type: "disabled" };
+    }
 
     const promptDebug: LlmMessagesDebug = {
       system: params.system,
@@ -97,6 +116,7 @@ async function chatCompletionText(params: {
       chatCompletionsUrl: params.profile.chatCompletionsUrl.trim(),
       temperature: params.temperature,
       usesJsonResponseFormat: useJson,
+      thinkingDisabled: thinkingOff || undefined,
     };
 
     const res = await fetch(params.profile.chatCompletionsUrl.trim(), {
@@ -117,7 +137,9 @@ async function chatCompletionText(params: {
     }
 
     const data = await res.json();
-    const parsed = parseChatCompletionResponse(data);
+    const parsed = parseChatCompletionResponse(data, {
+      allowReasoningFallback: !thinkingOff,
+    });
     const trimmed = parsed.text.trim();
     return {
       text: trimmed,
@@ -311,7 +333,8 @@ async function fetchThemeCharacterAppearances(args: {
 }
 
 /**
- * ① 人选 → ② 批量形象（「换一批」时 excludeNames 仅作用于①，随后自动②）
+ * 仅推荐人选（name + dynasty）；形象描述由 {@link fetchCharacterAppearance} 单独生成。
+ * 「换一批」时 excludeNames 仅作用于本阶段。
  */
 export async function fetchThemeCharacters(params: {
   profileId?: string | null;
@@ -344,6 +367,69 @@ export async function fetchThemeCharacters(params: {
     });
     phases.push(rosterPhase);
 
+    const characters: CharacterSuggestion[] = roster.map((r) => ({
+      name: r.name,
+      dynasty: r.dynasty,
+      appearance: "",
+    }));
+
+    const merged = promptDebugFromPhases(phases);
+    if (!merged) {
+      throw new Error("推荐人物：内部调试信息缺失");
+    }
+    return {
+      characters,
+      promptDebug: {
+        ...merged,
+        storyboardStrategy: "character_recommend · roster only",
+      },
+    };
+  } catch (e) {
+    const partial = promptDebugFromPhases(phases);
+    if (e instanceof LlmAssistError) {
+      throw new LlmAssistError(e.message, e.promptDebug ?? partial);
+    }
+    if (partial) {
+      throw new LlmAssistError(
+        e instanceof Error ? e.message : "推荐人物失败",
+        partial,
+      );
+    }
+    throw e;
+  }
+}
+
+/** 为当前锁定人物生成文生图用形象描述（步骤 2 · 生成封面图前） */
+export async function fetchCharacterAppearance(params: {
+  profileId?: string | null;
+  seriesTitle: string;
+  characterName: string;
+  dynasty?: string | null;
+}): Promise<{ appearance: string; promptDebug: LlmMessagesDebug }> {
+  const file = loadLlmProfilesFile();
+  const profile = pickProfile(file, params.profileId);
+  const key = resolveApiKeyForProfile(profile);
+  if (!key) {
+    throw new LlmNotConfiguredError(
+      `当前档案「${profile.label}」需在环境变量 ${profile.apiKeyEnv.trim()} 中配置 API 密钥后，才可生成形象描述。`,
+    );
+  }
+
+  const name = params.characterName.trim();
+  if (!name) {
+    throw new Error("请填写人物/对象");
+  }
+
+  const roster: CharacterRosterRow[] = [
+    {
+      name,
+      dynasty: params.dynasty?.trim() || "不详",
+    },
+  ];
+
+  const phases: LlmDebugPhase[] = [];
+
+  try {
     let appearanceByName: Map<string, string>;
     try {
       const first = await fetchThemeCharacterAppearances({
@@ -367,22 +453,20 @@ export async function fetchThemeCharacters(params: {
       phases.push(second.phase);
     }
 
-    const characters: CharacterSuggestion[] = roster.map((r) => ({
-      name: r.name,
-      dynasty: r.dynasty,
-      appearance: appearanceByName.get(r.name) ?? "",
-    }));
+    const appearance = appearanceByName.get(name)?.trim() ?? "";
+    if (!appearance) {
+      throw new Error("未生成有效形象描述，请重试");
+    }
 
     const merged = promptDebugFromPhases(phases);
     if (!merged) {
-      throw new Error("推荐人物：内部调试信息缺失");
+      throw new Error("生成形象描述：内部调试信息缺失");
     }
     return {
-      characters,
+      appearance,
       promptDebug: {
         ...merged,
-        storyboardStrategy:
-          "character_recommend · ① roster → ② appearance (batch)",
+        storyboardStrategy: "character_appearance · single subject",
       },
     };
   } catch (e) {
@@ -392,7 +476,7 @@ export async function fetchThemeCharacters(params: {
     }
     if (partial) {
       throw new LlmAssistError(
-        e instanceof Error ? e.message : "推荐人物失败",
+        e instanceof Error ? e.message : "生成形象描述失败",
         partial,
       );
     }
@@ -400,31 +484,33 @@ export async function fetchThemeCharacters(params: {
   }
 }
 
-type RawSlice = { suggestions?: Array<{ title?: string; angle?: string }> };
+type RawPeakTopic = {
+  suggestions?: Array<{ peakTitle?: string; peakDescription?: string }>;
+};
 
-export async function fetchCharacterSlices(params: {
+export async function fetchPeakTopics(params: {
   profileId?: string | null;
   seriesTitle: string;
   characterName: string;
-  excludeTitles?: string[];
+  excludePeakTitles?: string[];
   videoDurationMin?: VideoDurationMin;
-}): Promise<{ suggestions: SliceSuggestion[]; promptDebug: LlmMessagesDebug }> {
+}): Promise<{ suggestions: PeakTopicSuggestion[]; promptDebug: LlmMessagesDebug }> {
   const file = loadLlmProfilesFile();
   const profile = pickProfile(file, params.profileId);
   const key = resolveApiKeyForProfile(profile);
   if (!key) {
     throw new LlmNotConfiguredError(
-      `当前档案「${profile.label}」需在环境变量 ${profile.apiKeyEnv.trim()} 中配置 API 密钥后，才可使用「推荐切片标题」。`,
+      `当前档案「${profile.label}」需在环境变量 ${profile.apiKeyEnv.trim()} 中配置 API 密钥后，才可使用「AI 推荐峰值选题」。`,
     );
   }
 
   const excludeSet = new Set(
-    (params.excludeTitles ?? [])
+    (params.excludePeakTitles ?? [])
       .map((t) => String(t ?? "").trim())
       .filter(Boolean),
   );
 
-  const user = buildSliceRecommendUserPrompt(
+  const user = buildPeakTopicRecommendUserPrompt(
     params.seriesTitle,
     params.characterName,
     excludeSet.size ? Array.from(excludeSet) : undefined,
@@ -434,38 +520,154 @@ export async function fetchCharacterSlices(params: {
   const { text, promptDebug } = await chatCompletionText({
     profile,
     key,
-    system: SLICE_SYSTEM,
+    system: PEAK_TOPIC_SYSTEM,
     user,
-    temperature: 0.9,
+    temperature: 0.85,
   });
 
-  let parsed: RawSlice;
+  let parsed: RawPeakTopic;
   try {
-    parsed = JSON.parse(text) as RawSlice;
+    parsed = JSON.parse(text) as RawPeakTopic;
   } catch {
     throw new Error("模型输出不是合法 JSON");
   }
 
-  const cleaned: SliceSuggestion[] = [];
+  const cleaned: PeakTopicSuggestion[] = [];
   const seen = new Set<string>();
   for (const row of parsed.suggestions ?? []) {
-    const title = String(row.title ?? "").trim();
-    const angle = String(row.angle ?? "").trim();
-    if (!title || !angle) continue;
-    if (excludeSet.has(title)) continue;
-    if (seen.has(title)) continue;
-    seen.add(title);
-    cleaned.push({ title, angle });
+    const peakTitle = String(row.peakTitle ?? "").trim();
+    const peakDescription = String(row.peakDescription ?? "").trim();
+    if (!peakTitle || !peakDescription) continue;
+    if (excludeSet.has(peakTitle)) continue;
+    if (seen.has(peakTitle)) continue;
+    seen.add(peakTitle);
+    cleaned.push({ peakTitle, peakDescription });
     if (cleaned.length >= 8) break;
   }
 
   if (!cleaned.length) {
     throw new Error(
       excludeSet.size > 0 ?
-        "模型返回的切片标题与排除名单冲突或为空，请重试。"
-      : "模型未返回有效切片标题，请重试。",
+        "模型返回的峰值标题与排除名单冲突或为空，请重试。"
+      : "模型未返回有效峰值选题，请重试。",
     );
   }
 
   return { suggestions: cleaned, promptDebug };
+}
+
+/** @deprecated 使用 fetchPeakTopics */
+export const fetchCharacterSlices = fetchPeakTopics;
+
+const PROMO_COPY_REASONING_RE =
+  /我们要求|根据峰值|说明中强调|需要扣住|可能的方向|例如[:：]|最终选择|共\d+字|关键词[:：]|可以使用|需要考虑/u;
+
+function stripMarkdownFence(s: string): string {
+  let t = s.trim();
+  if (t.startsWith("```")) {
+    t = t.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "");
+  }
+  return t.trim();
+}
+
+function cleanPromoCopyLine(s: string): string {
+  return s
+    .replace(/^["「『]|["」』"]$/g, "")
+    .replace(/^(?:改写后的传播句|传播句)[:：]\s*/u, "")
+    .replace(/^(?:最终选择|推荐)[:：]\s*/u, "")
+    .trim();
+}
+
+function extractPromoCopyFromText(text: string): string {
+  const raw = stripMarkdownFence(text);
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw) as { promoCopy?: string };
+      const fromJson = String(parsed.promoCopy ?? "").trim();
+      if (fromJson) return cleanPromoCopyLine(fromJson);
+    } catch {
+      /* 非 JSON，按纯文本处理 */
+    }
+  }
+
+  const lines = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const candidates: string[] = [];
+  for (const line of lines) {
+    const finalPick = line.match(
+      /(?:最终选择|推荐)[:：]\s*[「『"]?([^」』"\n]{4,26})/u,
+    );
+    if (finalPick) candidates.push(finalPick[1]!.trim());
+    const quoted = line.match(/[「『"]([^」』"]{4,22})[」』"]/);
+    if (quoted && line.length > 20) candidates.push(quoted[1]!.trim());
+    candidates.push(cleanPromoCopyLine(line));
+  }
+  if (!candidates.length) candidates.push(cleanPromoCopyLine(raw));
+
+  const pick =
+    candidates.find(
+      (c) =>
+        c.length >= 4 &&
+        c.length <= 22 &&
+        !PROMO_COPY_REASONING_RE.test(c),
+    ) ??
+    candidates.find((c) => c.length >= 4 && c.length <= 22) ??
+    cleanPromoCopyLine(raw);
+
+  let promo = pick;
+  if (promo.length > 22) promo = promo.slice(0, 22).trim();
+  return promo;
+}
+
+export async function fetchPeakPromoCopy(params: {
+  profileId?: string | null;
+  seriesTitle: string;
+  characterName: string;
+  peakTitle: string;
+  peakDescription?: string;
+}): Promise<{ promoCopy: string; promptDebug: LlmMessagesDebug }> {
+  const file = loadLlmProfilesFile();
+  const profile = pickProfile(file, params.profileId);
+  const key = resolveApiKeyForProfile(profile);
+  if (!key) {
+    throw new LlmNotConfiguredError(
+      `当前档案「${profile.label}」需在环境变量 ${profile.apiKeyEnv.trim()} 中配置 API 密钥后，才可使用「生成传播文案」。`,
+    );
+  }
+
+  const user = buildPeakPromoCopyUserPrompt({
+    characterName: params.characterName,
+    peakTitle: params.peakTitle,
+    peakDescription: params.peakDescription,
+  });
+
+  const { text, promptDebug } = await chatCompletionText({
+    profile,
+    key,
+    system: PEAK_PROMO_COPY_SYSTEM,
+    user,
+    temperature: 0.85,
+    maxTokens: 128,
+    responseFormatJson: false,
+    disableThinking: true,
+  });
+
+  if (text.length > 50 && PROMO_COPY_REASONING_RE.test(text)) {
+    throw new LlmAssistError(
+      "模型返回了分析过程而非成品句，请重试。",
+      promptDebug,
+    );
+  }
+
+  const promoCopy = extractPromoCopyFromText(text);
+  if (!promoCopy || promoCopy.length < 4) {
+    throw new LlmAssistError("模型未返回有效传播文案，请重试。", promptDebug);
+  }
+  if (PROMO_COPY_REASONING_RE.test(promoCopy)) {
+    throw new LlmAssistError(
+      "模型返回了分析过程而非成品句，请重试。",
+      promptDebug,
+    );
+  }
+
+  return { promoCopy, promptDebug };
 }

@@ -14,7 +14,6 @@ const storyboardOpBtnBase =
   "inline-flex min-h-[2.35rem] shrink-0 items-center justify-center rounded-lg px-3 py-2 text-center text-[11px] font-semibold leading-tight tracking-wide transition active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40";
 const storyboardOpPrimaryBtn = `${storyboardOpBtnBase} border border-amber-500/45 bg-gradient-to-b from-amber-500/[0.18] to-amber-950/30 text-amber-50 shadow-sm hover:border-amber-400/55`;
 const storyboardOpSecondaryBtn = `${storyboardOpBtnBase} border border-zinc-600/85 bg-zinc-900/55 text-zinc-100 hover:border-zinc-500 hover:bg-zinc-800/50`;
-const storyboardOpCoverRefBtn = `${storyboardOpBtnBase} border border-amber-400/35 bg-amber-950/20 text-amber-100/95 hover:border-amber-400/50`;
 const storyboardOpTtsBtn = `${storyboardOpBtnBase} border border-sky-500/40 bg-gradient-to-b from-sky-500/16 to-sky-950/45 text-sky-50 hover:border-sky-400/50`;
 
 const sceneAccordionClass =
@@ -57,7 +56,8 @@ export type StoryboardSceneAccordionListProps = {
   sceneKeyframeUiByScene: Record<number, SceneKeyframePlanUi>;
   sceneExpandedByScene: Record<number, boolean>;
   onSceneExpandedChange: Dispatch<SetStateAction<Record<number, boolean>>>;
-  latestCoverUrl: string | null;
+  /** 人脸定稿 URL；正片分镜图生图仅以此为参考 */
+  latestFaceUrl: string | null;
   subject: string;
   profileId: string;
   imageProfileId: string;
@@ -68,13 +68,13 @@ export type StoryboardSceneAccordionListProps = {
     sceneIndex: number,
     urlByIndex: Record<number, string>,
     snapshot: Record<number, SceneAssetRow>,
-    standaloneCoverUrl: string | null,
-  ) => { referenceImageUrl?: string; referenceRole?: "previous" | "cover" };
+    faceStillUrl: string | null,
+  ) => { referenceImageUrl?: string; referenceRole?: "face" };
   onRunSingleAsset: (
     sceneIndex: number,
     visual: string,
     narration: string,
-    ref?: { referenceImageUrl?: string; referenceRole?: "previous" | "cover" },
+    ref?: { referenceImageUrl?: string; referenceRole?: "previous" | "cover" | "face" },
   ) => void;
   onRunSceneTts: (sceneIndex: number, narration: string) => void;
   onRunPlanSceneKeyframes: (sceneIndex: number, force: boolean) => void;
@@ -228,7 +228,7 @@ export function StoryboardSceneAccordionList(props: StoryboardSceneAccordionList
     sceneKeyframeUiByScene,
     sceneExpandedByScene,
     onSceneExpandedChange,
-    latestCoverUrl,
+    latestFaceUrl,
     subject,
     profileId,
     imageProfileId,
@@ -393,87 +393,47 @@ export function StoryboardSceneAccordionList(props: StoryboardSceneAccordionList
                     本镜操作
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    {s.index > 1 ? (
-                      <>
-                        <button
-                          type="button"
-                          disabled={row?.status === "running"}
-                          className={storyboardOpPrimaryBtn}
-                          onClick={() => {
-                            const urlBy = buildUrlByIndex();
-                            onRunSingleAsset(
-                              s.index,
-                              s.visualDescription,
-                              s.narration,
-                              resolveReferenceForScene(
-                                s.index,
-                                urlBy,
-                                assets,
-                                latestCoverUrl,
-                              ),
-                            );
-                          }}
-                        >
-                          按上一镜出图
-                        </button>
-                        <button
-                          type="button"
-                          disabled={row?.status === "running"}
-                          className={storyboardOpSecondaryBtn}
-                          onClick={() =>
-                            onRunSingleAsset(
-                              s.index,
-                              s.visualDescription,
-                              s.narration,
-                            )
-                          }
-                        >
-                          按切片内容生成
-                        </button>
-                        {latestCoverUrl ? (
-                          <button
-                            type="button"
-                            disabled={row?.status === "running"}
-                            className={storyboardOpCoverRefBtn}
-                            onClick={() =>
-                              onRunSingleAsset(
-                                s.index,
-                                s.visualDescription,
-                                s.narration,
-                                {
-                                  referenceImageUrl: latestCoverUrl,
-                                  referenceRole: "cover",
-                                },
-                              )
-                            }
-                          >
-                            按封面重生
-                          </button>
-                        ) : null}
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled={row?.status === "running"}
-                        className={storyboardOpPrimaryBtn}
-                        onClick={() => {
-                          const urlBy = buildUrlByIndex();
-                          onRunSingleAsset(
+                    <button
+                      type="button"
+                      disabled={row?.status === "running" || !latestFaceUrl}
+                      title={
+                        !latestFaceUrl ?
+                          "请先在步骤 2 生成人脸定稿图"
+                        : "以人脸定稿为参考，按本分镜画面与口播出图"
+                      }
+                      className={storyboardOpPrimaryBtn}
+                      onClick={() => {
+                        const urlBy = buildUrlByIndex();
+                        onRunSingleAsset(
+                          s.index,
+                          s.visualDescription,
+                          s.narration,
+                          resolveReferenceForScene(
                             s.index,
-                            s.visualDescription,
-                            s.narration,
-                            resolveReferenceForScene(
-                              s.index,
-                              urlBy,
-                              assets,
-                              latestCoverUrl,
-                            ),
-                          );
-                        }}
-                      >
-                        按分镜出图
-                      </button>
-                    )}
+                            urlBy,
+                            assets,
+                            latestFaceUrl,
+                          ),
+                        );
+                      }}
+                    >
+                      按分镜出图
+                    </button>
+                    <button
+                      type="button"
+                      disabled={row?.status === "running"}
+                      className={storyboardOpSecondaryBtn}
+                      title="不参考人脸图，仅按文本与画风文生（易变脸）"
+                      onClick={() =>
+                        onRunSingleAsset(
+                          s.index,
+                          s.visualDescription,
+                          s.narration,
+                        )
+                      }
+                    >
+                      仅文生（无参考）
+                    </button>
                     <button
                       type="button"
                       disabled={

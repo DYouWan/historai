@@ -3,7 +3,7 @@
 import type {
   CharacterSuggestion,
   GenerationResult,
-  SliceSuggestion,
+  PeakTopicSuggestion,
   StylePreset,
   Tone,
   VideoDurationMin,
@@ -12,7 +12,10 @@ import { buildSpineSnapshotFromResult } from "@/lib/storyboard-spine";
 import type { StoryboardChunkMode } from "@/lib/storyboard-llm-budget";
 import { VIDEO_DURATION_UI_OPTIONS } from "@/lib/video-duration";
 import { THEME_TITLE_PRESETS } from "@/lib/prompts/series-prompts";
-import { buildCoverImageFileStem } from "@/lib/slice-export-naming";
+import {
+  buildCoverImageFileStem,
+  buildFaceImageFileStem,
+} from "@/lib/slice-export-naming";
 import { ACTIVE_STUDIO_VERTICAL } from "@/lib/studio-verticals";
 import { StoryboardSceneAccordionList } from "@/components/studio/person/StoryboardSceneAccordionList";
 import type { SceneKeyframePlanResult } from "@/lib/scene-keyframe-plan";
@@ -146,8 +149,8 @@ const stepBlockTitleClass =
 const aiActionClass =
   "inline-flex min-h-[3rem] items-center justify-center rounded-xl bg-amber-500 px-8 text-sm font-semibold text-zinc-950 shadow-lg shadow-amber-950/30 ring-1 ring-amber-400/25 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none";
 
-/** 步骤 2 · 上传封面（火山 TOS），与主按钮同高以便并排 */
-const coverUploadBtnClass =
+/** 步骤 2 · 上传人像（火山 TOS），与生成按钮同高以便并排 */
+const faceUploadBtnClass =
   "inline-flex min-h-[3rem] w-full shrink-0 items-center justify-center rounded-xl border border-zinc-500/50 bg-zinc-900/55 px-6 text-sm font-semibold text-zinc-100 shadow-sm ring-1 ring-zinc-800/40 transition hover:border-zinc-400/55 hover:bg-zinc-800/60 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto";
 
 /** 步骤 4 · 叙事骨架 / 后续主流程按钮（单独一行，无分组标题） */
@@ -160,11 +163,15 @@ const workflowSteps = [
     label: "系列与人物",
     desc: "系列名与人物",
   },
-  { n: "2", label: "生成封面", desc: "人物形象 + 画风预设，竖屏外宣底图" },
+  {
+    n: "2",
+    label: "封面与人脸",
+    desc: "外宣封面 + 正脸定稿（分镜出图参考）",
+  },
   {
     n: "3",
-    label: "高光与呈现",
-    desc: "叙事时长、切片标题与说明",
+    label: "峰值选题",
+    desc: "叙事时长、峰值标题与峰值说明",
   },
   { n: "4", label: "文案与分镜", desc: "扩写切段、基调与主生成镜表" },
 ] as const;
@@ -262,6 +269,12 @@ type CoverGalleryItem = {
   savedRelativePath?: string;
 };
 
+type FaceStillState = {
+  url: string;
+  provider?: string;
+  savedRelativePath?: string;
+};
+
 function voiceoverTtsBuildDownloadFilename(mime: string, folderTitle: string) {
   const ext =
     mime.includes("wav") ? "wav"
@@ -326,9 +339,13 @@ export function PersonStudioWorkspace() {
   });
   const [coverGallery, setCoverGallery] = useState<CoverGalleryItem[]>([]);
   const [coverDeleteBusy, setCoverDeleteBusy] = useState(false);
-  const [coverUploadBusy, setCoverUploadBusy] = useState(false);
-  const coverUploadInputRef = useRef<HTMLInputElement>(null);
   const [selectedCoverId, setSelectedCoverId] = useState<string | null>(null);
+  const [faceStill, setFaceStill] = useState<FaceStillState | null>(null);
+  const [faceRequest, setFaceRequest] = useState<CoverRequestState>({
+    status: "idle",
+  });
+  const [faceUploadBusy, setFaceUploadBusy] = useState(false);
+  const faceUploadInputRef = useRef<HTMLInputElement>(null);
 
   const latestCoverUrl = useMemo(() => {
     if (selectedCoverId) {
@@ -337,8 +354,11 @@ export function PersonStudioWorkspace() {
     }
     return coverGallery[0]?.url ?? null;
   }, [coverGallery, selectedCoverId]);
+
+  const latestFaceUrl = faceStill?.url ?? null;
+
   /** 在新一条 L1 方案出现时收起故事弧子块 / 镜序表 */
-  const lastNarrativeSpineOpeningRef = useRef<string | undefined>(undefined);
+  const lastNarrativeSpineKeyRef = useRef<string | undefined>(undefined);
   const [llmProfiles, setLlmProfiles] = useState<LlmProfileOption[]>([]);
   const [profileId, setProfileId] = useState("");
   const [profilesError, setProfilesError] = useState<string | null>(null);
@@ -352,31 +372,42 @@ export function PersonStudioWorkspace() {
     volcengine: boolean;
     iflytek: boolean;
   } | null>(null);
-  const [sliceTitle, setSliceTitle] = useState("");
-  const [sliceAngle, setSliceAngle] = useState("");
-  const [sliceSuggestions, setSliceSuggestions] = useState<SliceSuggestion[]>(
-    [],
-  );
+  const [peakTitle, setPeakTitle] = useState("");
+  const [peakDescription, setPeakDescription] = useState("");
+  const [peakTopicSuggestions, setPeakTopicSuggestions] = useState<
+    PeakTopicSuggestion[]
+  >([]);
+  const [peakPromoCopy, setPeakPromoCopy] = useState("");
+  const [generatePromoCopyBusy, setGeneratePromoCopyBusy] = useState(false);
+  const [promoCopyHint, setPromoCopyHint] = useState<string | null>(null);
   const [characterSuggestions, setCharacterSuggestions] = useState<
     CharacterSuggestion[]
   >([]);
   const [suggestCharsBusy, setSuggestCharsBusy] = useState(false);
+  const [suggestAppearanceBusy, setSuggestAppearanceBusy] = useState(false);
+  const [appearanceHint, setAppearanceHint] = useState<string | null>(null);
   const [charsHint, setCharsHint] = useState<string | null>(null);
-  const [suggestSlicesBusy, setSuggestSlicesBusy] = useState(false);
-  const [slicesHint, setSlicesHint] = useState<string | null>(null);
+  const [suggestPeakTopicsBusy, setSuggestPeakTopicsBusy] = useState(false);
+  const [peakTopicsHint, setPeakTopicsHint] = useState<string | null>(null);
 
   useEffect(() => {
-    const opening = result?.storyArc?.opening?.trim();
-    if (!opening) {
-      lastNarrativeSpineOpeningRef.current = undefined;
+    const arc = result?.storyArc;
+    const sk = result?.sceneSkeleton;
+    if (!arc?.peak?.intent?.trim() || !sk?.length) {
+      lastNarrativeSpineKeyRef.current = undefined;
       return;
     }
-    if (lastNarrativeSpineOpeningRef.current === opening) return;
-    lastNarrativeSpineOpeningRef.current = opening;
+    const key = `${arc.peak.intent}|${sk.length}|${arc.milestones.length}`;
+    if (lastNarrativeSpineKeyRef.current === key) return;
+    lastNarrativeSpineKeyRef.current = key;
     setNarrativeStoryArcExpanded(false);
     setNarrativeSceneSkeletonExpanded(false);
     setVoiceoverDraftPanelExpanded(false);
-  }, [result?.storyArc?.opening]);
+  }, [
+    result?.storyArc?.peak?.intent,
+    result?.storyArc?.milestones?.length,
+    result?.sceneSkeleton?.length,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -455,8 +486,8 @@ export function PersonStudioWorkspace() {
   }, [seriesTitle]);
 
   useEffect(() => {
-    setSliceSuggestions([]);
-    setSlicesHint(null);
+    setPeakTopicSuggestions([]);
+    setPeakTopicsHint(null);
   }, [seriesTitle, subject]);
 
   useEffect(() => {
@@ -525,19 +556,19 @@ export function PersonStudioWorkspace() {
     [subject, subjectAppearance],
   );
 
-  /** 与导出文件夹命名一致：切片标题优先，否则系列名，否则未命名 */
-  const sliceFolderTitle = useMemo(
-    () => sliceTitle.trim() || seriesTitle.trim() || "未命名标题",
-    [sliceTitle, seriesTitle],
+  /** 与导出文件夹命名一致：峰值标题优先，否则系列名，否则未命名 */
+  const exportFolderTitle = useMemo(
+    () => peakTitle.trim() || seriesTitle.trim() || "未命名标题",
+    [peakTitle, seriesTitle],
   );
 
   const voiceoverTtsDownloadFilename = useMemo(
     () =>
       voiceoverTtsBuildDownloadFilename(
         voiceoverTtsExportMime,
-        sliceFolderTitle,
+        exportFolderTitle,
       ),
-    [voiceoverTtsExportMime, sliceFolderTitle],
+    [voiceoverTtsExportMime, exportFolderTitle],
   );
 
   const [sliceSaveHint, setSliceSaveHint] = useState<string | null>(null);
@@ -568,7 +599,7 @@ export function PersonStudioWorkspace() {
           body: JSON.stringify({
             imageUrl,
             subject: subject.trim(),
-            title: sliceFolderTitle,
+            title: exportFolderTitle,
             role: "scene",
             sceneIndex,
             fileStem,
@@ -588,7 +619,7 @@ export function PersonStudioWorkspace() {
         );
       }
     },
-    [subject, sliceFolderTitle],
+    [subject, exportFolderTitle],
   );
 
   const persistSceneKeyframeImageQuietly = useCallback(
@@ -606,7 +637,7 @@ export function PersonStudioWorkspace() {
           body: JSON.stringify({
             imageUrl,
             subject: subject.trim(),
-            title: sliceFolderTitle,
+            title: exportFolderTitle,
             role: "scene",
             sceneIndex,
             fileStem,
@@ -626,7 +657,7 @@ export function PersonStudioWorkspace() {
         );
       }
     },
-    [subject, sliceFolderTitle],
+    [subject, exportFolderTitle],
   );
 
   useEffect(() => {
@@ -759,11 +790,22 @@ export function PersonStudioWorkspace() {
     () =>
       buildCoverImageFileStem({
         seriesTitle,
-        sliceTitle,
+        peakTitle,
         subject,
         stylePreset,
       }),
-    [seriesTitle, sliceTitle, subject, stylePreset],
+    [seriesTitle, peakTitle, subject, stylePreset],
+  );
+
+  const faceFileStem = useMemo(
+    () =>
+      buildFaceImageFileStem({
+        seriesTitle,
+        peakTitle,
+        subject,
+        stylePreset,
+      }),
+    [seriesTitle, peakTitle, subject, stylePreset],
   );
 
   /** 仅需主角即可导出（可仅写入 manifest，无静帧/音频也会落盘） */
@@ -807,9 +849,8 @@ export function PersonStudioWorkspace() {
             subject: subject.trim(),
             dynasty: dynasty.trim() || undefined,
             seriesTitle: seriesTitle.trim() || undefined,
-            sliceTitle: sliceTitle.trim() || undefined,
-            sliceAngle: sliceAngle.trim() || undefined,
-            opening: result.storyArc.opening,
+            peakTitle: peakTitle.trim() || undefined,
+            peakDescription: peakDescription.trim() || undefined,
             scene: s,
             preserveFirstKeyframe,
           }),
@@ -857,8 +898,8 @@ export function PersonStudioWorkspace() {
       subject,
       dynasty,
       seriesTitle,
-      sliceTitle,
-      sliceAngle,
+      peakTitle,
+      peakDescription,
       result,
       assets,
     ],
@@ -899,8 +940,8 @@ export function PersonStudioWorkspace() {
             keyframeIndex,
             visualDescription: visual,
             seriesTitle: seriesTitle.trim() || undefined,
-            sliceTitle: sliceTitle.trim() || undefined,
-            sliceAngle: sliceAngle.trim() || undefined,
+            peakTitle: peakTitle.trim() || undefined,
+            peakDescription: peakDescription.trim() || undefined,
             narration: narration.trim() || undefined,
             stylePreset,
             projectSeed,
@@ -1020,8 +1061,8 @@ export function PersonStudioWorkspace() {
     [
       result,
       seriesTitle,
-      sliceTitle,
-      sliceAngle,
+      peakTitle,
+      peakDescription,
       stylePreset,
       projectSeed,
       imageProfileId,
@@ -1111,8 +1152,8 @@ export function PersonStudioWorkspace() {
           subject: subject.trim(),
           dynasty: dynasty.trim(),
           seriesTitle: seriesTitle.trim(),
-          sliceTitle: sliceTitle.trim(),
-          sliceAngle: sliceAngle.trim(),
+          peakTitle: peakTitle.trim(),
+          peakDescription: peakDescription.trim(),
           stylePreset,
           videoDurationMin,
           storyboardChunkMode,
@@ -1160,8 +1201,8 @@ export function PersonStudioWorkspace() {
     subject,
     dynasty,
     seriesTitle,
-    sliceTitle,
-    sliceAngle,
+    peakTitle,
+    peakDescription,
     stylePreset,
     videoDurationMin,
     storyboardChunkMode,
@@ -1251,7 +1292,7 @@ export function PersonStudioWorkspace() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             subject: subject.trim(),
-            title: sliceFolderTitle,
+            title: exportFolderTitle,
             audioBase64: b64,
             mimeType: mime,
             fileStem: sceneAudioStem(sceneIndex),
@@ -1282,7 +1323,7 @@ export function PersonStudioWorkspace() {
         }));
       }
     },
-    [subject, sliceFolderTitle, volcTtsEffectiveVoiceType, sceneAudioStem],
+    [subject, exportFolderTitle, volcTtsEffectiveVoiceType, sceneAudioStem],
   );
 
   const runBatchSceneTts = useCallback(async () => {
@@ -1342,16 +1383,16 @@ export function PersonStudioWorkspace() {
     }
   };
 
-  const runSuggestSubtitles = async () => {
+  const runSuggestPeakTopics = async () => {
     if (!seriesTitle.trim() || !subject.trim()) return;
-    setSuggestSlicesBusy(true);
-    setSlicesHint(null);
-    const excludeSliceTitles =
-      sliceSuggestions.length > 0 ?
-        sliceSuggestions.map((s) => s.title)
+    setSuggestPeakTopicsBusy(true);
+    setPeakTopicsHint(null);
+    const excludePeakTitles =
+      peakTopicSuggestions.length > 0 ?
+        peakTopicSuggestions.map((s) => s.peakTitle)
       : undefined;
     try {
-      const res = await fetch("/api/suggest-character-slices", {
+      const res = await fetch("/api/suggest-peak-topics", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1359,34 +1400,97 @@ export function PersonStudioWorkspace() {
           seriesTitle: seriesTitle.trim(),
           characterName: subject.trim(),
           videoDurationMin,
-          ...(excludeSliceTitles?.length ? { excludeSliceTitles } : {}),
+          ...(excludePeakTitles?.length ? { excludePeakTitles } : {}),
         }),
       });
       const json = (await res.json()) as {
         error?: string;
-        suggestions?: SliceSuggestion[];
+        suggestions?: PeakTopicSuggestion[];
       };
       if (!res.ok) {
-        setSlicesHint(json.error ?? "推荐失败");
+        setPeakTopicsHint(json.error ?? "推荐失败");
         return;
       }
-      setSliceSuggestions(json.suggestions ?? []);
+      setPeakTopicSuggestions(json.suggestions ?? []);
     } catch (e) {
-      setSlicesHint(e instanceof Error ? e.message : "网络错误");
+      setPeakTopicsHint(e instanceof Error ? e.message : "网络错误");
     } finally {
-      setSuggestSlicesBusy(false);
+      setSuggestPeakTopicsBusy(false);
     }
   };
 
   const applyCharacterSuggestion = (c: CharacterSuggestion) => {
     setSubject(c.name);
-    setSubjectAppearance(c.appearance);
     setDynasty(c.dynasty.trim());
   };
 
-  const applySuggestion = (s: SliceSuggestion) => {
-    setSliceTitle(s.title);
-    setSliceAngle(s.angle);
+  const runSuggestCharacterAppearance = async () => {
+    if (!seriesTitle.trim() || !subject.trim()) return;
+    setSuggestAppearanceBusy(true);
+    setAppearanceHint(null);
+    try {
+      const res = await fetch("/api/suggest-character-appearance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: profileId || undefined,
+          seriesTitle: seriesTitle.trim(),
+          characterName: subject.trim(),
+          dynasty: dynasty.trim() || undefined,
+        }),
+      });
+      const json = (await res.json()) as { error?: string; appearance?: string };
+      if (!res.ok) {
+        setAppearanceHint(json.error ?? "生成失败");
+        return;
+      }
+      const app = json.appearance?.trim();
+      if (!app) {
+        setAppearanceHint("未返回有效形象描述");
+        return;
+      }
+      setSubjectAppearance(app);
+    } catch (e) {
+      setAppearanceHint(e instanceof Error ? e.message : "网络错误");
+    } finally {
+      setSuggestAppearanceBusy(false);
+    }
+  };
+
+  const applySuggestion = (s: PeakTopicSuggestion) => {
+    setPeakTitle(s.peakTitle);
+    setPeakDescription(s.peakDescription);
+    setPeakPromoCopy("");
+    setPromoCopyHint(null);
+  };
+
+  const runGeneratePromoCopy = async () => {
+    if (!peakTitle.trim() || !seriesTitle.trim() || !subject.trim()) return;
+    setGeneratePromoCopyBusy(true);
+    setPromoCopyHint(null);
+    try {
+      const res = await fetch("/api/generate-peak-promo-copy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: profileId || undefined,
+          seriesTitle: seriesTitle.trim(),
+          characterName: subject.trim(),
+          peakTitle: peakTitle.trim(),
+          peakDescription: peakDescription.trim() || undefined,
+        }),
+      });
+      const json = (await res.json()) as { error?: string; promoCopy?: string };
+      if (!res.ok) {
+        setPromoCopyHint(json.error ?? "生成失败");
+        return;
+      }
+      setPeakPromoCopy(json.promoCopy?.trim() ?? "");
+    } catch (e) {
+      setPromoCopyHint(e instanceof Error ? e.message : "网络错误");
+    } finally {
+      setGeneratePromoCopyBusy(false);
+    }
   };
 
   const runGenerate = async () => {
@@ -1400,8 +1504,8 @@ export function PersonStudioWorkspace() {
         body: JSON.stringify({
           profileId: profileId || undefined,
           seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
+          peakTitle: peakTitle.trim() || undefined,
+          peakDescription: peakDescription.trim() || undefined,
           subject,
           dynasty: dynasty || undefined,
           subjectAppearance: subjectAppearance.trim() || undefined,
@@ -1449,8 +1553,8 @@ export function PersonStudioWorkspace() {
         body: JSON.stringify({
           profileId: profileId || undefined,
           seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
+          peakTitle: peakTitle.trim() || undefined,
+          peakDescription: peakDescription.trim() || undefined,
           subject,
           dynasty: dynasty || undefined,
           subjectAppearance: subjectAppearance.trim() || undefined,
@@ -1577,7 +1681,7 @@ export function PersonStudioWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           subject: subject.trim(),
-          title: sliceFolderTitle,
+          title: exportFolderTitle,
           audioBase64: p.b64,
           mimeType: p.mime,
           fileStem: "voiceover",
@@ -1619,8 +1723,8 @@ export function PersonStudioWorkspace() {
         body: JSON.stringify({
           profileId: profileId || undefined,
           seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
+          peakTitle: peakTitle.trim() || undefined,
+          peakDescription: peakDescription.trim() || undefined,
           subject,
           dynasty: dynasty || undefined,
           subjectAppearance: subjectAppearance.trim() || undefined,
@@ -1653,28 +1757,14 @@ export function PersonStudioWorkspace() {
 
   const resolveReferenceForScene = useCallback(
     (
-      sceneIndex: number,
-      urlByIndex: Record<number, string>,
-      snapshot: Record<number, AssetRow>,
-      /** 独立封面图 URL；缺省时仍可退回镜 1 已出图（兼容旧流程） */
-      standaloneCoverUrl: string | null,
-    ): { referenceImageUrl?: string; referenceRole?: "previous" | "cover" } => {
-      if (sceneIndex <= 1) return {};
-      const prevUrl = urlByIndex[sceneIndex - 1];
-      if (prevUrl) {
-        return { referenceImageUrl: prevUrl, referenceRole: "previous" };
-      }
-      const coverFallback = standaloneCoverUrl ?? urlByIndex[1];
-      if (coverFallback) {
-        return { referenceImageUrl: coverFallback, referenceRole: "cover" };
-      }
-      const prevRow = snapshot[sceneIndex - 1];
-      if (prevRow?.status === "success" && prevRow.url) {
-        return { referenceImageUrl: prevRow.url, referenceRole: "previous" };
-      }
-      const coverRow = snapshot[1];
-      if (coverRow?.status === "success" && coverRow.url) {
-        return { referenceImageUrl: coverRow.url, referenceRole: "cover" };
+      _sceneIndex: number,
+      _urlByIndex: Record<number, string>,
+      _snapshot: Record<number, AssetRow>,
+      faceStillUrl: string | null,
+    ): { referenceImageUrl?: string; referenceRole?: "face" } => {
+      const face = faceStillUrl?.trim();
+      if (face) {
+        return { referenceImageUrl: face, referenceRole: "face" };
       }
       return {};
     },
@@ -1685,7 +1775,10 @@ export function PersonStudioWorkspace() {
     sceneIndex: number,
     visual: string,
     narration: string | undefined,
-    ref?: { referenceImageUrl?: string; referenceRole?: "previous" | "cover" },
+    ref?: {
+      referenceImageUrl?: string;
+      referenceRole?: "previous" | "cover" | "face";
+    },
     opts?: { signal?: AbortSignal },
   ): Promise<{ success: boolean; url?: string; cancelled?: boolean }> => {
     setAssets((prev) => ({
@@ -1705,8 +1798,8 @@ export function PersonStudioWorkspace() {
           sceneIndex,
           visualDescription: visual,
           seriesTitle: seriesTitle.trim() || undefined,
-          sliceTitle: sliceTitle.trim() || undefined,
-          sliceAngle: sliceAngle.trim() || undefined,
+          peakTitle: peakTitle.trim() || undefined,
+          peakDescription: peakDescription.trim() || undefined,
           narration: narration?.trim() || undefined,
           stylePreset,
           projectSeed,
@@ -1858,7 +1951,7 @@ export function PersonStudioWorkspace() {
             body: JSON.stringify({
               imageUrl: coverUrl,
               subject: subject.trim(),
-              title: sliceFolderTitle,
+              title: exportFolderTitle,
               role: "cover",
               fileStem: seedForFile,
             }),
@@ -1891,82 +1984,12 @@ export function PersonStudioWorkspace() {
         }
       })();
     },
-    [subject, sliceFolderTitle],
-  );
-
-  const handleCoverUploadFileChange = useCallback(
-    async (e: ChangeEvent<HTMLInputElement>) => {
-      const input = e.target;
-      const file = input.files?.[0];
-      input.value = "";
-      if (!file) return;
-      if (!subject.trim()) {
-        setError("上传封面图前请先填写「人物/主题」。");
-        return;
-      }
-      if (coverGallery.length >= MAX_COVER_GALLERY) {
-        setError(
-          `已有 ${MAX_COVER_GALLERY} 张封面预览。请先勾选删除若干张后再上传。`,
-        );
-        return;
-      }
-      if (file.size > COVER_UPLOAD_MAX_BYTES) {
-        setError(
-          `图片须不超过 ${Math.floor(COVER_UPLOAD_MAX_BYTES / 1024 / 1024)}MB。`,
-        );
-        return;
-      }
-      if (!isLikelyCoverImageFile(file)) {
-        setError("仅支持 JPEG、PNG、WebP、GIF 图片。");
-        return;
-      }
-      setCoverUploadBusy(true);
-      setError(null);
-      setSliceSaveHint(null);
-      try {
-        const fileData = await readFileAsBase64(file);
-        const res = await fetch("/api/upload-reference-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileName: file.name || "cover.jpg",
-            mimeType: file.type || "image/jpeg",
-            fileSize: file.size,
-            fileData,
-          }),
-        });
-        const json = (await res.json()) as {
-          error?: string;
-          url?: string;
-          success?: boolean;
-        };
-        if (!res.ok || !json.url?.trim()) {
-          setError(json.error ?? "上传失败");
-          return;
-        }
-        appendCoverToGalleryAndPersist({
-          coverUrl: json.url.trim(),
-          seedForFile: coverFileStem,
-          provider: "tos",
-          coverKind: "upload",
-        });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "上传失败");
-      } finally {
-        setCoverUploadBusy(false);
-      }
-    },
-    [
-      subject,
-      coverGallery.length,
-      coverFileStem,
-      appendCoverToGalleryAndPersist,
-    ],
+    [subject, exportFolderTitle],
   );
 
   const runStandaloneCoverRequest = async (): Promise<boolean> => {
     if (!canGenerateStandaloneCover) {
-      setError("请先填写人物，并在「形象描述」中填写人物形象（可与 AI 推荐人物一致）。");
+      setError("请先填写人物，并在步骤 2 填写或 AI 生成「人物形象描述」。");
       return false;
     }
     if (coverGallery.length >= MAX_COVER_GALLERY) {
@@ -2021,6 +2044,199 @@ export function PersonStudioWorkspace() {
   const runCoverOnly = async () => {
     setError(null);
     await runStandaloneCoverRequest();
+  };
+
+  const appendFaceAndPersist = useCallback(
+    (args: {
+      faceUrl: string;
+      seedForFile: string;
+      provider?: string;
+      faceKind?: "generate" | "upload";
+    }) => {
+      const { faceUrl, seedForFile, provider, faceKind = "generate" } = args;
+      const doneVerb = faceKind === "upload" ? "上传" : "生成";
+      setFaceStill({ url: faceUrl, provider });
+      setFaceRequest({ status: "idle" });
+
+      void (async () => {
+        try {
+          const saveRes = await fetch("/api/save-slice-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageUrl: faceUrl,
+              subject: subject.trim(),
+              title: exportFolderTitle,
+              role: "face",
+              fileStem: seedForFile,
+              replaceExisting: true,
+            }),
+          });
+          const saveJson = (await saveRes.json()) as {
+            error?: string;
+            relativePath?: string;
+          };
+          if (!saveRes.ok) {
+            setSliceSaveHint(
+              `人脸定稿已${doneVerb}；自动保存失败：${saveJson.error ?? saveRes.status}（可重试生成/上传或使用「导出资源」）`,
+            );
+            return;
+          }
+          const rp = saveJson.relativePath;
+          if (rp) {
+            setFaceStill((prev) =>
+              prev ? { ...prev, savedRelativePath: rp } : prev,
+            );
+          }
+        } catch (e) {
+          setSliceSaveHint(
+            e instanceof Error ?
+              `人脸定稿已${doneVerb}；自动保存失败：${e.message}`
+            : `人脸定稿已${doneVerb}；自动保存失败`,
+          );
+        }
+      })();
+    },
+    [subject, exportFolderTitle],
+  );
+
+  const handleDeleteFaceStill = useCallback(async () => {
+    if (!faceStill) return;
+    setError(null);
+    try {
+      const rp = faceStill.savedRelativePath?.trim();
+      if (rp) {
+        const res = await fetch("/api/delete-slice-export-file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ relativePath: rp }),
+        });
+        const json = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setError(json.error ?? `删除失败：${rp}`);
+          return;
+        }
+      }
+      setFaceStill(null);
+      setFaceRequest({ status: "idle" });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "删除失败");
+    }
+  }, [faceStill]);
+
+  const handleFaceUploadFileChange = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const input = e.target;
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file) return;
+      if (!subject.trim()) {
+        setError("上传人像图前请先填写「人物/主题」。");
+        return;
+      }
+      if (file.size > COVER_UPLOAD_MAX_BYTES) {
+        setError(
+          `图片须不超过 ${Math.floor(COVER_UPLOAD_MAX_BYTES / 1024 / 1024)}MB。`,
+        );
+        return;
+      }
+      if (!isLikelyCoverImageFile(file)) {
+        setError("仅支持 JPEG、PNG、WebP、GIF 图片。");
+        return;
+      }
+      setFaceUploadBusy(true);
+      setError(null);
+      setSliceSaveHint(null);
+      try {
+        const fileData = await readFileAsBase64(file);
+        const res = await fetch("/api/upload-reference-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: file.name || "face.jpg",
+            mimeType: file.type || "image/jpeg",
+            fileSize: file.size,
+            fileData,
+          }),
+        });
+        const json = (await res.json()) as {
+          error?: string;
+          url?: string;
+        };
+        if (!res.ok || !json.url?.trim()) {
+          setError(json.error ?? "上传失败");
+          return;
+        }
+        appendFaceAndPersist({
+          faceUrl: json.url.trim(),
+          seedForFile: faceFileStem,
+          provider: "tos",
+          faceKind: "upload",
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "上传失败");
+      } finally {
+        setFaceUploadBusy(false);
+      }
+    },
+    [subject, faceFileStem, appendFaceAndPersist],
+  );
+
+  const runStandaloneFaceRequest = async (): Promise<boolean> => {
+    if (!canGenerateStandaloneCover) {
+      setError("请先填写人物，并在步骤 2 填写或 AI 生成「人物形象描述」。");
+      return false;
+    }
+    setFaceRequest({ status: "running" });
+    setError(null);
+    setSliceSaveHint(null);
+    try {
+      const res = await fetch("/api/assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sceneIndex: 0,
+          standaloneFace: true,
+          visualDescription: "—",
+          stylePreset,
+          projectSeed,
+          imageProfileId: imageProfileId || undefined,
+          subject: subject.trim() || undefined,
+          dynasty: dynasty.trim() || undefined,
+          subjectAppearance: subjectAppearance.trim(),
+        }),
+      });
+      const json = (await res.json()) as {
+        error?: string;
+        url?: string;
+        provider?: string;
+      };
+      if (!res.ok) {
+        if (res.status === 400 && json.error) {
+          setError(String(json.error));
+        }
+        setFaceRequest({ status: "failed", error: json.error });
+        return false;
+      }
+      appendFaceAndPersist({
+        faceUrl: json.url as string,
+        seedForFile: faceFileStem,
+        provider: json.provider as string | undefined,
+        faceKind: "generate",
+      });
+      return true;
+    } catch (e) {
+      setFaceRequest({
+        status: "failed",
+        error: e instanceof Error ? e.message : "请求失败",
+      });
+      return false;
+    }
+  };
+
+  const runFaceOnly = async () => {
+    setError(null);
+    await runStandaloneFaceRequest();
   };
 
   return (
@@ -2311,16 +2527,16 @@ export function PersonStudioWorkspace() {
                   <div>
                     <h3 className={stepBlockTitleClass}>人物与背景</h3>
                     <p className="mt-1 text-[11px] text-zinc-600">
-                      点「AI 推荐相关人物」先按系列生成人选，再批量写形象与朝代（两次模型调用，略慢）；再次点击会排除当前列表并整批重跑。
+                      点「AI 推荐相关人物」按系列生成人选与朝代；再次点击会排除当前列表换一批。形象描述请在步骤 2 单独生成。
                     </p>
                   </div>
                   <button
                     type="button"
                     disabled={suggestCharsBusy || !seriesTitle.trim()}
-                    onClick={runSuggestCharacters}
+                    onClick={() => void runSuggestCharacters()}
                     className={`${aiActionClass} w-full sm:w-auto sm:shrink-0`}
                   >
-                    {suggestCharsBusy ? "推荐中（人选+形象）…" : "AI 推荐相关人物"}
+                    {suggestCharsBusy ? "推荐中…" : "AI 推荐相关人物"}
                   </button>
                 </div>
                 {charsHint ? (
@@ -2331,7 +2547,7 @@ export function PersonStudioWorkspace() {
                 {characterSuggestions.length > 0 ? (
                   <div className="mb-5">
                     <p className="mb-2 text-[11px] font-medium text-zinc-500">
-                      AI 推荐 · 点击填入人物、形象与朝代
+                      AI 推荐 · 点击填入人物与朝代
                     </p>
                     <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                       {characterSuggestions.map((c) => (
@@ -2350,11 +2566,6 @@ export function PersonStudioWorkspace() {
                                 </span>
                               : null}
                             </span>
-                            {c.appearance ? (
-                              <span className="mt-1 block text-[10px] leading-relaxed text-zinc-500">
-                                {c.appearance}
-                              </span>
-                            ) : null}
                           </button>
                         </li>
                       ))}
@@ -2388,19 +2599,6 @@ export function PersonStudioWorkspace() {
                       onChange={(e) => setDynasty(e.target.value)}
                     />
                   </label>
-                  <label className="block min-w-0 sm:col-span-2">
-                    <span className={groupTitleClass}>
-                      形象描述{" "}
-                      <span className="font-normal text-zinc-600">（选填）</span>
-                    </span>
-                    <textarea
-                      className={`${fieldClass} mt-1.5 min-h-[4.5rem] resize-y`}
-                      placeholder="如：中年将领，武冠战袍，眉宇沉毅，目光如炬（AI 推荐可自动填入）"
-                      value={subjectAppearance}
-                      onChange={(e) => setSubjectAppearance(e.target.value)}
-                      rows={2}
-                    />
-                  </label>
                 </div>
               </section>
             </div>
@@ -2420,11 +2618,58 @@ export function PersonStudioWorkspace() {
                 </p>
               ) : null}
               <p className="mt-3 max-w-2xl text-[11px] leading-relaxed text-zinc-400">
-                根据步骤 1 的<strong className="font-medium text-zinc-500">人物、形象描述</strong>
+                根据步骤 1 的<strong className="font-medium text-zinc-500">人物</strong>
                 与<strong className="font-medium text-zinc-500">朝代/背景</strong>
-                ，结合下方<strong className="font-medium text-zinc-500">画风预设</strong>
+                ，以及下方<strong className="font-medium text-zinc-500">人物形象描述</strong>
+                、<strong className="font-medium text-zinc-500">画风预设</strong>
                 生成竖屏外宣底图；纯画面无内嵌字，人物居左，背景虚化、右侧留叠字区。
               </p>
+            </div>
+            <div className="mt-5 border-t border-zinc-800/70 pt-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+                <label className="block min-w-0 flex-1">
+                  <span className={groupTitleClass}>
+                    人物形象描述{" "}
+                    <span className="text-amber-600/90">*</span>
+                    <span className="font-normal text-zinc-600">
+                      （封面与人像出图必填）
+                    </span>
+                  </span>
+                  <textarea
+                    className={`${fieldClass} mt-1.5 min-h-[4.5rem] resize-y`}
+                    placeholder="如：中年将领，武冠战袍，眉宇沉毅，目光如炬（可手填或点右侧 AI 生成）"
+                    value={subjectAppearance}
+                    onChange={(e) => setSubjectAppearance(e.target.value)}
+                    rows={2}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={
+                    suggestAppearanceBusy ||
+                    !seriesTitle.trim() ||
+                    !subject.trim()
+                  }
+                  title={
+                    !seriesTitle.trim() ?
+                      "请先在步骤 1 填写系列名"
+                    : !subject.trim() ?
+                      "请先在步骤 1 填写人物/对象"
+                    : "按系列与当前人物生成文生图用外形描述"
+                  }
+                  onClick={() => void runSuggestCharacterAppearance()}
+                  className={`${faceUploadBtnClass} sm:mb-0.5`}
+                >
+                  {suggestAppearanceBusy ?
+                    "生成中…"
+                  : "AI 生成形象描述"}
+                </button>
+              </div>
+              {appearanceHint ? (
+                <p className="mt-3 rounded-xl border border-rose-900/45 bg-rose-950/25 px-3 py-2.5 text-xs leading-relaxed text-rose-100/95">
+                  {appearanceHint}
+                </p>
+              ) : null}
             </div>
             <div className="mt-5 border-t border-zinc-800/70 pt-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
@@ -2446,36 +2691,48 @@ export function PersonStudioWorkspace() {
                 </label>
                 <div className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:flex-row sm:justify-end sm:gap-3">
                   <input
-                    ref={coverUploadInputRef}
+                    ref={faceUploadInputRef}
                     type="file"
                     className="hidden"
                     accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
-                    onChange={handleCoverUploadFileChange}
+                    onChange={handleFaceUploadFileChange}
                   />
                   <button
                     type="button"
                     disabled={
-                      coverUploadBusy ||
+                      faceUploadBusy ||
+                      faceRequest.status === "running" ||
                       coverRequest.status === "running" ||
-                      !subject.trim() ||
-                      coverGallery.length >= MAX_COVER_GALLERY
+                      !subject.trim()
                     }
                     title={
                       !subject.trim() ?
                         "请先填写步骤 1 的「人物/主题」"
-                      : coverGallery.length >= MAX_COVER_GALLERY ?
-                        `已达 ${MAX_COVER_GALLERY} 张上限，请先勾选并删除若干封面后再上传`
-                      : "上传到火山引擎对象存储（TOS），用于封面预览、保存至切片目录及分镜图生图参考"
+                      : "上传到火山 TOS，作为人脸定稿与分镜图生图参考"
                     }
-                    onClick={() => coverUploadInputRef.current?.click()}
-                    className={coverUploadBtnClass}
+                    onClick={() => faceUploadInputRef.current?.click()}
+                    className={faceUploadBtnClass}
                   >
-                    {coverUploadBusy ? "封面上传中…" : "上传封面图"}
+                    {faceUploadBusy ? "人像上传中…" : "上传人像图"}
                   </button>
                   <button
                     type="button"
                     disabled={
-                      coverUploadBusy ||
+                      faceUploadBusy ||
+                      faceRequest.status === "running" ||
+                      coverRequest.status === "running" ||
+                      !canGenerateStandaloneCover
+                    }
+                    onClick={() => void runFaceOnly()}
+                    className={`${aiActionClass} w-full shrink-0 sm:w-auto`}
+                  >
+                    {faceRequest.status === "running" ?
+                      "人像生成中…"
+                    : "生成人像图"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
                       coverRequest.status === "running" ||
                       !canGenerateStandaloneCover ||
                       coverGallery.length >= MAX_COVER_GALLERY
@@ -2603,17 +2860,62 @@ export function PersonStudioWorkspace() {
                   ) : null}
                 </>
               ) : null}
+              {faceRequest.status === "failed" && faceRequest.error ? (
+                <p className="max-w-2xl text-sm leading-snug text-rose-200">
+                  {faceRequest.error}
+                </p>
+              ) : null}
+              {faceRequest.status === "running" ? (
+                <p className="mt-2 text-[11px] text-amber-200/80">
+                  正在请求人脸定稿…
+                </p>
+              ) : null}
+              {faceStill ? (
+                <div className="mt-4 flex max-w-[11rem] flex-col gap-1.5">
+                  <span className="text-[10px] font-medium text-emerald-400/90">
+                    当前定稿
+                    {faceStill.savedRelativePath ?
+                      <span className="font-normal text-zinc-600"> · 已落盘</span>
+                    : <span className="font-normal text-zinc-600"> · 仅预览</span>}
+                  </span>
+                  <div className="overflow-hidden rounded-xl bg-black/40 ring-1 ring-zinc-800/90">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={faceStill.url}
+                      alt="人脸定稿图"
+                      className="aspect-[9/16] w-full object-cover object-top"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={
+                      faceRequest.status === "running" || faceUploadBusy
+                    }
+                    title="移除当前人脸定稿（已落盘则同步删除项目目录内文件）"
+                    onClick={() => void handleDeleteFaceStill()}
+                    className="w-full rounded-md border border-rose-800/45 bg-rose-950/25 px-2 py-1.5 text-center text-[10px] font-semibold leading-tight text-rose-100/95 transition hover:border-rose-600/55 hover:bg-rose-900/35 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    删除定稿
+                  </button>
+                </div>
+              ) : null}
             </div>
+
           </div>
 
           <div className={`${panelClass} border-l-2 border-l-amber-600/25`}>
             <div>
-              <p className={sectionLabelClass}>高光切片 · 步骤 3</p>
+              <p className={sectionLabelClass}>峰值选题 · 步骤 3</p>
             </div>
 
-            {slicesHint ? (
+            {peakTopicsHint ? (
               <p className="mt-3 rounded-xl border border-rose-900/45 bg-rose-950/25 px-3 py-2.5 text-xs leading-relaxed text-rose-100/95">
-                {slicesHint}
+                {peakTopicsHint}
+              </p>
+            ) : null}
+            {promoCopyHint ? (
+              <p className="mt-3 rounded-xl border border-rose-900/45 bg-rose-950/25 px-3 py-2.5 text-xs leading-relaxed text-rose-100/95">
+                {promoCopyHint}
               </p>
             ) : null}
 
@@ -2621,12 +2923,16 @@ export function PersonStudioWorkspace() {
               <div className="block sm:col-span-2">
                 <div className="mt-1.5 flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-3">
                   <label className="flex min-w-0 flex-1 flex-col">
-                    <span className={groupTitleClass}>切片标题</span>
+                    <span className={groupTitleClass}>峰值标题</span>
                     <input
                       className={`${fieldClass} mt-1.5 w-full`}
-                      placeholder="如：离皇位最近却不敢坐的人"
-                      value={sliceTitle}
-                      onChange={(e) => setSliceTitle(e.target.value)}
+                      placeholder="如：官渡之战前夜曹操的抉择"
+                      value={peakTitle}
+                      onChange={(e) => {
+                        setPeakTitle(e.target.value);
+                        setPeakPromoCopy("");
+                        setPromoCopyHint(null);
+                      }}
                     />
                   </label>
                   <label className="flex w-full shrink-0 flex-col sm:w-[12rem]">
@@ -2650,44 +2956,69 @@ export function PersonStudioWorkspace() {
                   <button
                     type="button"
                     disabled={
-                      suggestSlicesBusy || !seriesTitle.trim() || !subject.trim()
+                      suggestPeakTopicsBusy || !seriesTitle.trim() || !subject.trim()
                     }
-                    onClick={runSuggestSubtitles}
+                    onClick={runSuggestPeakTopics}
                     className={`${aiActionClass} w-full shrink-0 sm:w-auto sm:px-6`}
                   >
-                    {suggestSlicesBusy ? "推荐中…" : "AI 推荐切片标题"}
+                    {suggestPeakTopicsBusy ? "推荐中…" : "AI 推荐峰值选题"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      generatePromoCopyBusy ||
+                      !peakTitle.trim() ||
+                      !seriesTitle.trim() ||
+                      !subject.trim()
+                    }
+                    onClick={runGeneratePromoCopy}
+                    className={`${aiActionClass} w-full shrink-0 sm:w-auto sm:px-6`}
+                  >
+                    {generatePromoCopyBusy ? "生成中…" : "生成传播文案"}
                   </button>
                 </div>
               </div>
               <label className="block sm:col-span-2">
-                <span className={groupTitleClass}>切片说明（切片命题）</span>
+                <span className={groupTitleClass}>传播文案</span>
+                <input
+                  className={`${fieldClass} mt-1.5 w-full`}
+                  placeholder="点击「生成传播文案」填入，也可手动编辑"
+                  value={peakPromoCopy}
+                  onChange={(e) => {
+                    setPeakPromoCopy(e.target.value);
+                    setPromoCopyHint(null);
+                  }}
+                />
+              </label>
+              <label className="block sm:col-span-2">
+                <span className={groupTitleClass}>峰值说明</span>
                 <textarea
                   rows={3}
                   className={`${fieldClass} mt-1.5 min-h-[5.5rem] resize-y`}
                   placeholder="1～3 句正面写「讲什么」：一个高光或争议的冲突/行动/后果；不必写「不讲什么」。"
-                  value={sliceAngle}
-                  onChange={(e) => setSliceAngle(e.target.value)}
+                  value={peakDescription}
+                  onChange={(e) => setPeakDescription(e.target.value)}
                 />
               </label>
             </div>
-            {sliceSuggestions.length > 0 ? (
+            {peakTopicSuggestions.length > 0 ? (
               <div className="mt-4">
                 <p className="mb-2 text-[11px] font-medium text-zinc-500">
-                  AI 推荐 · 点击填入上方标题与切片说明
+                  AI 推荐 · 点击填入峰值标题与峰值说明
                 </p>
                 <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {sliceSuggestions.map((s, i) => (
-                    <li key={`${s.title}-${i}`}>
+                  {peakTopicSuggestions.map((s, i) => (
+                    <li key={`${s.peakTitle}-${i}`}>
                       <button
                         type="button"
                         onClick={() => applySuggestion(s)}
                         className="flex h-full w-full flex-col rounded-lg border border-zinc-700/90 bg-zinc-900/50 p-3 text-left transition hover:border-amber-600/50 hover:bg-zinc-900/90"
                       >
                         <span className="text-sm font-medium leading-snug text-amber-100/90">
-                          {s.title}
+                          {s.peakTitle}
                         </span>
                         <span className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-zinc-500">
-                          {s.angle}
+                          {s.peakDescription}
                         </span>
                       </button>
                     </li>
@@ -2695,18 +3026,20 @@ export function PersonStudioWorkspace() {
                 </ul>
               </div>
             ) : null}
-            {(sliceTitle.trim() || sliceAngle.trim()) && (
+            {(peakTitle.trim() || peakDescription.trim()) && (
               <button
                 type="button"
                 onClick={() => {
-                  setSliceTitle("");
-                  setSliceAngle("");
-                  setSliceSuggestions([]);
-                  setSlicesHint(null);
+                  setPeakTitle("");
+                  setPeakDescription("");
+                  setPeakPromoCopy("");
+                  setPeakTopicSuggestions([]);
+                  setPeakTopicsHint(null);
+                  setPromoCopyHint(null);
                 }}
                 className="mt-3 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-400 hover:underline"
               >
-                清除切片标题
+                清除峰值选题
               </button>
             )}
           </div>
@@ -2714,8 +3047,8 @@ export function PersonStudioWorkspace() {
           <footer className="rounded-xl border border-zinc-800/60 bg-zinc-950/30 px-4 py-5 sm:px-5">
             <p className={sectionLabelClass}>步骤 4 · 生成文案与分镜</p>
             <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-zinc-500">
-              叙事时长在步骤 3「切片标题」行右侧选择，会参与「AI
-              推荐切片标题」与主生成镜数体量。请先设扩写切段与叙事基调。主流程三步：叙事方案（L1）→
+              叙事时长在步骤 3「峰值标题」行右侧选择，会参与「AI
+              推荐峰值选题」与主生成镜数体量。可先填峰值标题后点「生成传播文案」。主流程：叙事方案（L1）→
               整稿口播（L2）→ 分镜扩写（L3）；可在 L1 后粘贴口播跳过 AI 撰稿。完成后在下方按镜出图或批量生成本镜静帧。
             </p>
             <div className="mt-4 grid grid-cols-1 gap-4 border-t border-zinc-800/70 pt-4 sm:grid-cols-2 sm:items-end">
@@ -2788,7 +3121,10 @@ export function PersonStudioWorkspace() {
                 {
                   id: "l1",
                   label: "L1 叙事方案",
-                  done: Boolean(result.storyArc?.opening),
+                  done: Boolean(
+                    result.storyArc?.peak?.intent?.trim() &&
+                      result.sceneSkeleton?.length,
+                  ),
                   active: false,
                 },
                 {
@@ -2873,9 +3209,9 @@ export function PersonStudioWorkspace() {
                   <p className="mt-0.5 text-[11px] text-zinc-500">
                     L1 · 故事弧 + 镜序表
                   </p>
-                  {!narrativeSkeletonPanelExpanded && result.storyArc?.opening ?
+                  {!narrativeSkeletonPanelExpanded && result.storyArc?.peak?.intent ?
                     <p className="mt-2 line-clamp-2 text-sm leading-snug text-zinc-400">
-                      {result.storyArc.opening}
+                      {result.storyArc.peak.label} · {result.storyArc.peak.intent}
                     </p>
                   : null}
                 </div>
@@ -2892,16 +3228,7 @@ export function PersonStudioWorkspace() {
                 id="historai-narrative-skeleton-panel-body"
                 className="p-5 sm:p-6"
               >
-                <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
-                    开场
-                  </p>
-                  <p className="mt-2 text-lg font-medium leading-relaxed text-zinc-100 sm:text-xl">
-                    {result.storyArc.opening}
-                  </p>
-                </div>
-
-                <div className="mt-6">
+                <div>
                   <button
                     type="button"
                     onClick={() => setNarrativeStoryArcExpanded((v) => !v)}
@@ -3418,7 +3745,7 @@ export function PersonStudioWorkspace() {
                 sceneKeyframeUiByScene={sceneKeyframeUiByScene}
                 sceneExpandedByScene={sceneExpandedByScene}
                 onSceneExpandedChange={setSceneExpandedByScene}
-                latestCoverUrl={latestCoverUrl}
+                latestFaceUrl={latestFaceUrl}
                 subject={subject}
                 profileId={profileId}
                 imageProfileId={imageProfileId}

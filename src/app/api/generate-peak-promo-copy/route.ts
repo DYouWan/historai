@@ -6,9 +6,8 @@ import {
 import {
   LlmAssistError,
   LlmNotConfiguredError,
-  fetchCharacterSlices,
+  fetchPeakPromoCopy,
 } from "@/lib/theme-assist-llm";
-import { parseVideoDurationMin } from "@/lib/video-duration";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -18,14 +17,14 @@ export async function POST(req: Request) {
   let profileId: string | undefined;
   let seriesTitle = "";
   let characterName = "";
+  let peakTitle = "";
   try {
     const body = (await req.json()) as {
       profileId?: string;
       seriesTitle?: string;
       characterName?: string;
-      excludeSliceTitles?: unknown;
-      /** 成片目标时长（分钟），与创作中心「叙事时长」一致 */
-      videoDurationMin?: unknown;
+      peakTitle?: string;
+      peakDescription?: string;
     };
 
     profileId = body.profileId;
@@ -44,40 +43,39 @@ export async function POST(req: Request) {
         { status: 400, headers: llmRequestIdHeaders(requestId) },
       );
     }
+    peakTitle = body.peakTitle?.trim() ?? "";
+    if (!peakTitle) {
+      return NextResponse.json(
+        { error: "请先填写峰值标题" },
+        { status: 400, headers: llmRequestIdHeaders(requestId) },
+      );
+    }
 
-    const excludeTitles = Array.isArray(body.excludeSliceTitles)
-      ? body.excludeSliceTitles
-          .map((x) => (typeof x === "string" ? x.trim() : ""))
-          .filter(Boolean)
-          .slice(0, 40)
-      : [];
+    const peakDescription = body.peakDescription?.trim() || undefined;
 
-    const videoDurationMin = parseVideoDurationMin(body.videoDurationMin);
-
-    const { suggestions, promptDebug } = await fetchCharacterSlices({
+    const { promoCopy, promptDebug } = await fetchPeakPromoCopy({
       profileId: body.profileId,
       seriesTitle,
       characterName,
-      videoDurationMin,
-      ...(excludeTitles.length ? { excludeTitles } : {}),
+      peakTitle,
+      peakDescription,
     });
 
     await appendLlmDebugLog({
       requestId,
-      route: "POST /api/suggest-character-slices",
+      route: "POST /api/generate-peak-promo-copy",
       promptDebug,
       meta: {
         profileId: body.profileId ?? null,
         seriesTitle,
         characterName,
-        suggestionCount: suggestions.length,
-        excludeTitleCount: excludeTitles.length,
-        videoDurationMin,
+        peakTitle,
+        hasPeakDescription: Boolean(peakDescription),
       },
     });
 
     return NextResponse.json(
-      { suggestions },
+      { promoCopy },
       { headers: llmRequestIdHeaders(requestId) },
     );
   } catch (e) {
@@ -87,16 +85,17 @@ export async function POST(req: Request) {
         { status: 400, headers: llmRequestIdHeaders(requestId) },
       );
     }
-    const message = e instanceof Error ? e.message : "推荐失败";
+    const message = e instanceof Error ? e.message : "生成失败";
     if (e instanceof LlmAssistError && e.promptDebug) {
       await appendLlmDebugLog({
         requestId,
-        route: "POST /api/suggest-character-slices",
+        route: "POST /api/generate-peak-promo-copy",
         promptDebug: e.promptDebug,
         meta: {
           profileId: profileId ?? null,
           seriesTitle,
           characterName,
+          peakTitle,
           failed: true,
           error: message,
         },

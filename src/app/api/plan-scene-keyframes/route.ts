@@ -24,9 +24,8 @@ export async function POST(req: Request) {
       subject?: string;
       dynasty?: string;
       seriesTitle?: string;
-      sliceTitle?: string;
-      sliceAngle?: string;
-      opening?: string;
+      peakTitle?: string;
+      peakDescription?: string;
       scene?: Partial<StoryboardScene>;
       preserveFirstKeyframe?: boolean;
     };
@@ -77,9 +76,8 @@ export async function POST(req: Request) {
       subject: body.subject.trim(),
       dynasty: body.dynasty?.trim() || undefined,
       seriesTitle: body.seriesTitle?.trim() || undefined,
-      sliceTitle: body.sliceTitle?.trim() || undefined,
-      sliceAngle: body.sliceAngle?.trim() || undefined,
-      opening: body.opening?.trim() || undefined,
+      peakTitle: body.peakTitle?.trim() || undefined,
+      peakDescription: body.peakDescription?.trim() || undefined,
       preserveFirstKeyframe: Boolean(body.preserveFirstKeyframe),
       llmRequestId: requestId,
     });

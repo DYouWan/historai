@@ -6,8 +6,9 @@ import {
 import {
   LlmAssistError,
   LlmNotConfiguredError,
-  fetchThemeCharacters,
+  fetchPeakTopics,
 } from "@/lib/theme-assist-llm";
+import { parseVideoDurationMin } from "@/lib/video-duration";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -16,12 +17,17 @@ export async function POST(req: Request) {
   const requestId = createLlmRequestId();
   let profileId: string | undefined;
   let seriesTitle = "";
+  let characterName = "";
   try {
     const body = (await req.json()) as {
       profileId?: string;
       seriesTitle?: string;
-      excludeCharacters?: unknown;
+      characterName?: string;
+      excludePeakTitles?: unknown;
+      /** 成片目标时长（分钟），与创作中心「叙事时长」一致 */
+      videoDurationMin?: unknown;
     };
+
     profileId = body.profileId;
     seriesTitle =
       typeof body.seriesTitle === "string" ? body.seriesTitle.trim() : "";
@@ -31,36 +37,47 @@ export async function POST(req: Request) {
         { status: 400, headers: llmRequestIdHeaders(requestId) },
       );
     }
+    characterName = body.characterName?.trim() ?? "";
+    if (!characterName) {
+      return NextResponse.json(
+        { error: "请填写或选择人物/对象" },
+        { status: 400, headers: llmRequestIdHeaders(requestId) },
+      );
+    }
 
-    const excludeNames = Array.isArray(body.excludeCharacters)
-      ? body.excludeCharacters
+    const excludePeakTitles = Array.isArray(body.excludePeakTitles)
+      ? body.excludePeakTitles
           .map((x) => (typeof x === "string" ? x.trim() : ""))
           .filter(Boolean)
           .slice(0, 40)
       : [];
 
-    const { characters, promptDebug } = await fetchThemeCharacters({
+    const videoDurationMin = parseVideoDurationMin(body.videoDurationMin);
+
+    const { suggestions, promptDebug } = await fetchPeakTopics({
       profileId: body.profileId,
       seriesTitle,
-      ...(excludeNames.length ? { excludeNames } : {}),
+      characterName,
+      videoDurationMin,
+      ...(excludePeakTitles.length ? { excludePeakTitles } : {}),
     });
 
     await appendLlmDebugLog({
       requestId,
-      route: "POST /api/suggest-theme-characters",
+      route: "POST /api/suggest-peak-topics",
       promptDebug,
       meta: {
         profileId: body.profileId ?? null,
         seriesTitle,
-        characterCount: characters.length,
-        excludeCount: excludeNames.length,
-        pipeline: "character_roster_only",
-        phaseCount: promptDebug.phases?.length ?? 1,
+        characterName,
+        suggestionCount: suggestions.length,
+        excludePeakTitleCount: excludePeakTitles.length,
+        videoDurationMin,
       },
     });
 
     return NextResponse.json(
-      { characters },
+      { suggestions },
       { headers: llmRequestIdHeaders(requestId) },
     );
   } catch (e) {
@@ -74,11 +91,12 @@ export async function POST(req: Request) {
     if (e instanceof LlmAssistError && e.promptDebug) {
       await appendLlmDebugLog({
         requestId,
-        route: "POST /api/suggest-theme-characters",
+        route: "POST /api/suggest-peak-topics",
         promptDebug: e.promptDebug,
         meta: {
           profileId: profileId ?? null,
           seriesTitle,
+          characterName,
           failed: true,
           error: message,
         },

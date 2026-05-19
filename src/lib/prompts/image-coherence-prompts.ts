@@ -19,8 +19,11 @@ export {
   SUBJECT_APPEARANCE_COVER_PROMPT_MAX,
 };
 
-/** 切片说明可较长，封面提示里截断以免顶满厂商上限 */
-export const SLICE_ANGLE_COVER_PROMPT_MAX = 520;
+/** 峰值说明可较长，封面提示里截断以免顶满厂商上限 */
+export const PEAK_DESCRIPTION_COVER_PROMPT_MAX = 520;
+
+/** @deprecated 使用 PEAK_DESCRIPTION_COVER_PROMPT_MAX */
+export const SLICE_ANGLE_COVER_PROMPT_MAX = PEAK_DESCRIPTION_COVER_PROMPT_MAX;
 
 /** 文生图提示里附带口播长度上限 */
 export const NARRATION_IN_IMAGE_PROMPT_MAX = 280;
@@ -70,15 +73,15 @@ export function buildPortraitCoverPromptSnippet(opts: {
 export function buildCoverBaseOnlyPromptSnippet(opts: {
   subject?: string | null;
   seriesTitle?: string | null;
-  sliceTitle?: string | null;
-  sliceAngle?: string | null;
+  peakTitle?: string | null;
+  peakDescription?: string | null;
 }): string {
   const protagonist = anchorSubjectLabelForImage(opts.subject);
-  const slice = opts.sliceTitle?.trim();
+  const slice = opts.peakTitle?.trim();
   const series = opts.seriesTitle?.trim();
-  const angle = opts.sliceAngle?.trim();
+  const angle = opts.peakDescription?.trim();
   const angleClip = angle ?
-    safePromptInline(angle, SLICE_ANGLE_COVER_PROMPT_MAX)
+    safePromptInline(angle, PEAK_DESCRIPTION_COVER_PROMPT_MAX)
   : "";
   const seriesCtx = series ? safePromptInline(series, 80) : "";
 
@@ -101,7 +104,7 @@ export function buildCoverBaseOnlyPromptSnippet(opts: {
   }
 
   if (slice) {
-    lines.push(`【切片标题】「${safePromptInline(slice, 80)}」`);
+    lines.push(`【峰值标题】「${safePromptInline(slice, 80)}」`);
   }
 
   if (seriesCtx) {
@@ -183,7 +186,7 @@ export const IMAGE_SCENE_CAST_HINT =
   "【场面调度】紧随其后的分镜画面若写到敌军、部属、人群、对峙、远景营阵或环境纵深，须按描述取景构图，勿擅自缩成仅主角单人肖像特写（除非分镜明确如此）；主角朝代服饰气质仍须一致。";
 
 export function buildScene1OpeningPrompt(): string {
-  return "【正片第 1 镜｜叙事开场】承接 storyArc.opening 后的第一个可见画面；**非**外宣独立封面（封面请用「生成封面图」单独出图）。";
+  return "【正片第 1 镜｜叙事开场】落实镜序表 index=1 的 beat；**非**外宣独立封面（封面请用「生成封面图」单独出图）。";
 }
 
 export function buildFollowSceneImg2ImgLead(sceneIndex: number): string {

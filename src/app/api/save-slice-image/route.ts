@@ -19,9 +19,11 @@ type Body = {
   imageUrl?: string;
   subject?: string;
   title?: string;
-  role?: "cover" | "scene";
+  role?: "cover" | "scene" | "face";
   sceneIndex?: number;
   fileStem?: string;
+  /** 人脸定稿等单槽资源：覆盖同 stem 文件而非序号递增 */
+  replaceExisting?: boolean;
 };
 
 export async function POST(req: Request) {
@@ -42,7 +44,10 @@ export async function POST(req: Request) {
   const subject = String(body.subject ?? "").trim();
   const titleRaw = String(body.title ?? "").trim();
   const title = titleRaw || "未命名标题";
-  const role = body.role === "cover" ? "cover" : "scene";
+  const role =
+    body.role === "face" ? "face"
+    : body.role === "cover" ? "cover"
+    : "scene";
   const sceneIndex =
     typeof body.sceneIndex === "number" && Number.isFinite(body.sceneIndex) ?
       body.sceneIndex
@@ -68,7 +73,12 @@ export async function POST(req: Request) {
       stemFromClient
     : role === "cover" ?
       "cover"
+    : role === "face" ?
+      "face"
     : `scene-img-${String(sceneIndex).padStart(2, "0")}`;
+
+  const replaceExisting =
+    body.replaceExisting === true || role === "face";
 
   try {
     const { relativePath } = await saveRemoteFileToSliceExports({
@@ -76,6 +86,7 @@ export async function POST(req: Request) {
       folderName,
       baseName,
       url: imageUrl,
+      replaceExisting,
     });
 
     return NextResponse.json(

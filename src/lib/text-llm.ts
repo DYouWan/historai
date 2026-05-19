@@ -16,8 +16,8 @@ import type {
 export async function generateWithTextLlm(params: {
   profileId?: string | null;
   seriesTitle?: string;
-  sliceTitle?: string;
-  sliceAngle?: string;
+  peakTitle?: string;
+  peakDescription?: string;
   subject: string;
   dynasty?: string;
   subjectAppearance?: string;
@@ -43,8 +43,8 @@ export async function generateWithTextLlm(params: {
 
   const promptParams = {
     seriesTitle: seriesNormalized,
-    sliceTitle: params.sliceTitle,
-    sliceAngle: params.sliceAngle,
+    peakTitle: params.peakTitle,
+    peakDescription: params.peakDescription,
     subject: params.subject,
     dynasty: params.dynasty,
     tone: params.tone,

@@ -50,8 +50,8 @@ export type SliceExportManifestV1 = {
   subject: string;
   dynasty: string;
   seriesTitle: string;
-  sliceTitle: string;
-  sliceAngle: string;
+  peakTitle: string;
+  peakDescription: string;
   stylePreset: StylePreset;
   videoDurationMin: VideoDurationMin;
   storyboardChunkMode: StoryboardChunkMode | string;
@@ -108,8 +108,8 @@ export function buildSliceExportBundlePayload(params: {
   subject: string;
   dynasty: string;
   seriesTitle: string;
-  sliceTitle: string;
-  sliceAngle: string;
+  peakTitle: string;
+  peakDescription: string;
   stylePreset: StylePreset;
   videoDurationMin: VideoDurationMin;
   storyboardChunkMode: StoryboardChunkMode | string;
@@ -128,7 +128,7 @@ export function buildSliceExportBundlePayload(params: {
   downloads: SliceExportDownload[];
 } {
   const folderTitle =
-    params.sliceTitle.trim() ||
+    params.peakTitle.trim() ||
     params.seriesTitle.trim() ||
     "未命名标题";
   const exportFolder = buildSliceExportFolderName(
@@ -146,7 +146,7 @@ export function buildSliceExportBundlePayload(params: {
       url: params.coverStillUrl,
       fileStem: buildCoverImageFileStem({
         seriesTitle: params.seriesTitle,
-        sliceTitle: params.sliceTitle,
+        peakTitle: params.peakTitle,
         subject: params.subject,
         stylePreset: params.stylePreset,
       }),
@@ -218,8 +218,8 @@ export function buildSliceExportBundlePayload(params: {
     subject: params.subject.trim(),
     dynasty: params.dynasty.trim(),
     seriesTitle: params.seriesTitle.trim(),
-    sliceTitle: params.sliceTitle.trim(),
-    sliceAngle: params.sliceAngle.trim(),
+    peakTitle: params.peakTitle.trim(),
+    peakDescription: params.peakDescription.trim(),
     stylePreset: params.stylePreset,
     videoDurationMin: params.videoDurationMin,
     storyboardChunkMode: params.storyboardChunkMode,

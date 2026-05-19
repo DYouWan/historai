@@ -239,6 +239,8 @@ export async function saveRemoteFileToSliceExports(params: {
   folderName: string;
   baseName: string;
   url: string;
+  /** true 时写入 `{stem}{ext}` 并覆盖已有文件（用于人脸定稿等单槽资源） */
+  replaceExisting?: boolean;
 }): Promise<{ relativePath: string; fileName: string }> {
   const { cwd, folderName, baseName, url } = params;
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
@@ -254,7 +256,13 @@ export async function saveRemoteFileToSliceExports(params: {
 
   const safeStem = sanitizeExportSegment(baseName, 96);
   const dir = path.join(cwd, SLICE_EXPORT_ROOT, folderName);
-  const outPath = await resolveNextVersionedOutPath(dir, safeStem, ext);
+  let outPath: string;
+  if (params.replaceExisting) {
+    await mkdir(dir, { recursive: true });
+    outPath = path.join(dir, `${safeStem}${ext}`);
+  } else {
+    outPath = await resolveNextVersionedOutPath(dir, safeStem, ext);
+  }
 
   await writeFile(outPath, buf);
   const relativePath = path

@@ -10,6 +10,10 @@ import {
   type TextToImageProfileRow,
 } from "@/lib/media-profiles";
 import { COVER_IMAGE_NEGATIVE_PROMPT } from "@/lib/prompts/image-coherence-prompts";
+import {
+  faceImageNegativePromptForStyle,
+  faceVolcenginePromptSuffixForStyle,
+} from "@/lib/prompts/face-style-prompts";
 import { normalizeStylePreset } from "@/lib/prompts/image-prompts";
 import type { StylePreset } from "@/lib/types";
 
@@ -80,8 +84,11 @@ async function dashscopeQwenMultimodal(params: {
   /** 同镜多关键帧时区分随机种子，默认 1 */
   keyframeIndex?: number;
   referenceImageUrl?: string | null;
-  /** 独立封面：关闭扩写并强化 negative，避免 prompt_extend 画出标题/字幕 */
-  standaloneCover?: boolean;
+  /** 独立封面/人脸定稿：关闭扩写并强化 negative，避免 prompt_extend 画出标题/字幕 */
+  standalonePortrait?: boolean;
+  /** 区分封面与人脸定稿的随机种子（正片镜为 scene） */
+  portraitKind?: "cover" | "face" | "scene";
+  stylePreset?: StylePreset;
 }): Promise<string> {
   const url = params.profile.generationUrl!.trim();
   const model = params.profile.model!.trim();
@@ -97,18 +104,28 @@ async function dashscopeQwenMultimodal(params: {
       messages: [{ role: "user", content }],
     },
     parameters: {
-      negative_prompt: params.standaloneCover
-        ? [params.profile.negativePrompt, COVER_IMAGE_NEGATIVE_PROMPT]
-            .filter(Boolean)
-            .join(", ")
-        : params.profile.negativePrompt ?? DASHSCOPE_DEFAULT_NEGATIVE,
+      negative_prompt:
+        params.portraitKind === "face"
+          ? [
+              params.profile.negativePrompt,
+              faceImageNegativePromptForStyle(
+                params.stylePreset ?? "anime",
+              ),
+            ]
+              .filter(Boolean)
+              .join(", ")
+          : params.standalonePortrait
+            ? [params.profile.negativePrompt, COVER_IMAGE_NEGATIVE_PROMPT]
+                .filter(Boolean)
+                .join(", ")
+            : params.profile.negativePrompt ?? DASHSCOPE_DEFAULT_NEGATIVE,
       prompt_extend:
-        params.standaloneCover ? false : params.profile.promptExtend !== false,
+        params.standalonePortrait ? false : params.profile.promptExtend !== false,
       watermark: params.profile.watermark === true,
       size: params.profile.size ?? "1080*1920",
       n: 1,
       seed: seedFromString(
-        `${params.projectSeed}|scene|${params.sceneIndex}|kf${params.keyframeIndex ?? 1}`,
+        `${params.projectSeed}|${params.portraitKind ?? "scene"}|${params.sceneIndex}|kf${params.keyframeIndex ?? 1}`,
       ),
     },
   };
@@ -153,16 +170,22 @@ async function volcengineSeedream(params: {
   profile: TextToImageProfileRow;
   fullPrompt: string;
   referenceImageUrl?: string | null;
-  standaloneCover?: boolean;
+  standalonePortrait?: boolean;
+  portraitKind?: "cover" | "face" | "scene";
+  stylePreset?: StylePreset;
 }): Promise<string> {
   const base = params.profile.baseUrl!.replace(/\/+$/, "");
   const endpoint = `${base}/images/generations`;
   const promptBody = params.fullPrompt.slice(0, 2000);
+  let promptOut = promptBody;
+  if (params.portraitKind === "face") {
+    promptOut = `${promptBody}\n\n[Must follow] ${faceVolcenginePromptSuffixForStyle(params.stylePreset ?? "anime")}`;
+  } else if (params.standalonePortrait) {
+    promptOut = `${promptBody}\n\n[Must follow] Absolutely no text, letters, Chinese characters, subtitles, signs, plaques, or watermarks in the image.`;
+  }
   const body: Record<string, unknown> = {
     model: params.profile.model,
-    prompt: params.standaloneCover
-      ? `${promptBody}\n\n[Must follow] Absolutely no text, letters, Chinese characters, subtitles, signs, plaques, or watermarks in the image.`
-      : promptBody,
+    prompt: promptOut,
     size: params.profile.size ?? "1440x2560",
     response_format: params.profile.responseFormat ?? "url",
     watermark: params.profile.watermark === true,
@@ -211,10 +234,12 @@ export type GenerateSceneImageParams = {
   visualDescription: string;
   /** 仅出独立外宣封面（sceneIndex 应为 0）；依据人物形象描述与画风，与正片镜 1 脱钩 */
   standaloneCover?: boolean;
+  /** 仅出独立人脸定稿图（sceneIndex 应为 0）；正脸头肩锚点，与封面外宣脱钩 */
+  standaloneFace?: boolean;
   /** 封面相关（旧字段）：非独立封面或兼容时可传；独立封面以 subjectAppearance 为主 */
   seriesTitle?: string | null;
-  sliceTitle?: string | null;
-  sliceAngle?: string | null;
+  peakTitle?: string | null;
+  peakDescription?: string | null;
   /** 本镜口播，与 visual 一并写入文生图 prompt，约束声画实体一致 */
   narration?: string | null;
   stylePreset: StylePreset;
@@ -228,7 +253,7 @@ export type GenerateSceneImageParams = {
   /** 公网可访问的参考图 URL（上一镜或封面）；镜号>1 且模型支持时启用图生图 */
   referenceImageUrl?: string | null;
   /** 供提示词与回包说明：reference 来自上一镜还是封面兜底 */
-  referenceRole?: "previous" | "cover" | null;
+  referenceRole?: "previous" | "cover" | "face" | null;
   /** 同镜多关键帧：1=主静图位，2～4 为追加关键帧（影响 DashScope 随机种子） */
   keyframeIndex?: number;
 };
@@ -238,9 +263,9 @@ export type GenerateSceneImageResult = {
   provider: string;
   profileId: string;
   coherence: {
-    sceneRole: "cover" | "follow";
+    sceneRole: "cover" | "face" | "follow";
     referenceApplied: boolean;
-    referenceRole: "previous" | "cover" | null;
+    referenceRole: "previous" | "cover" | "face" | null;
   };
   /** 供 logs 记录，不含密钥 */
   log: {
@@ -265,7 +290,14 @@ export async function generateSceneImage(
     : 1;
 
   let visualIn = params.visualDescription.trim();
-  if (!params.standaloneCover && kfSafe > 1) {
+  const standalonePortrait =
+    params.standaloneCover === true || params.standaloneFace === true;
+  const portraitKind =
+    params.standaloneFace ? "face"
+    : params.standaloneCover ? "cover"
+    : "scene";
+
+  if (!standalonePortrait && kfSafe > 1) {
     visualIn =
       `【同镜第 ${kfSafe} 关键帧｜须与前一关键帧人物与场景连续】仅允许机位、景别、姿态或表情渐进；禁止换脸、换朝代、换场景。\n${visualIn}`;
   }
@@ -286,9 +318,10 @@ export async function generateSceneImage(
     stylePreset,
     visualDescription: visualIn,
     standaloneCover: params.standaloneCover,
+    standaloneFace: params.standaloneFace,
     seriesTitle: params.seriesTitle,
-    sliceTitle: params.sliceTitle,
-    sliceAngle: params.sliceAngle,
+    peakTitle: params.peakTitle,
+    peakDescription: params.peakDescription,
     narration: params.narration,
     subject: params.subject,
     dynasty: params.dynasty,
@@ -304,12 +337,9 @@ export async function generateSceneImage(
       ? params.referenceImageUrl?.trim() ?? null
       : null;
 
-  if (
-    params.standaloneCover &&
-    params.referenceImageUrl?.trim()
-  ) {
+  if (standalonePortrait && params.referenceImageUrl?.trim()) {
     throw new Error(
-      "独立封面已改为仅依据人物形象与画风文生，不再支持参考图。镜号大于 1 的分镜仍可使用上一镜或封面作图生图参考。",
+      "独立封面与人脸定稿仅依据人物形象与画风文生，不支持参考图。镜号大于 1 的分镜仍可使用上一镜或封面作图生图参考。",
     );
   }
 
@@ -331,7 +361,9 @@ export async function generateSceneImage(
         sceneIndex: params.sceneIndex,
         keyframeIndex: kfSafe,
         referenceImageUrl: refUrl,
-        standaloneCover: params.standaloneCover === true,
+        standalonePortrait,
+        portraitKind,
+        stylePreset,
       });
       break;
     case "volcengine_seedream":
@@ -340,7 +372,9 @@ export async function generateSceneImage(
         profile,
         fullPrompt: plan.fullPrompt,
         referenceImageUrl: refUrl,
-        standaloneCover: params.standaloneCover === true,
+        standalonePortrait,
+        portraitKind,
+        stylePreset,
       });
       break;
     default:
